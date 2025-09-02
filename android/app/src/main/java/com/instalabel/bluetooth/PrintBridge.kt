@@ -12,15 +12,27 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     companion object {
@@ -66,6 +78,14 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
             UUID.fromString("0000FFFE-0000-1000-8000-00805F9B34FB"), // ESC/POS command
             UUID.fromString("0000FFFF-0000-1000-8000-00805F9B34FB")  // ESC/POS data
         )
+        
+        // BLE chunking constants
+        private const val BLE_CHUNK_SIZE = 180 // Safe BLE packet size
+        private const val BLE_CHUNK_DELAY = 50L // 50ms delay between chunks
+        
+        // Printer DPI constants
+        private const val PRINTER_DPI = 203 // Standard thermal printer DPI
+        private const val MM_TO_DOTS_FACTOR = PRINTER_DPI / 25.4f
     }
 
     // Connection types
@@ -98,6 +118,338 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     private val deviceTechnologyCache = ConcurrentHashMap<String, ConnectionType>()
 
     override fun getName(): String = MODULE_NAME
+
+    // ===============================================================================
+    // NEW OPTIMIZED METHODS FOR IMAGE PROCESSING AND PRINTING
+    // ===============================================================================
+
+    /**
+     * Save captured label image to native storage and return file path
+     * This eliminates large base64 transfers between JS and native
+     */
+    @ReactMethod
+    fun saveLabelImage(base64Image: String, filename: String, promise: Promise) {
+        try {
+            Log.d(TAG, "Saving label image to native storage: $filename")
+            
+            // Remove data URL prefix if present
+            val cleanBase64 = if (base64Image.startsWith("data:image/")) {
+                base64Image.substring(base64Image.indexOf(",") + 1)
+            } else {
+                base64Image
+            }
+            
+            // Decode base64 to bitmap
+            val imageBytes = Base64.decode(cleanBase64, Base64.DEFAULT)
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+            
+            if (bitmap == null) {
+                promise.reject("IMAGE_DECODE_ERROR", "Failed to decode image data")
+                return
+            }
+            
+            // Save to cache directory
+            val cacheDir = reactApplicationContext.cacheDir
+            val imageFile = File(cacheDir, filename)
+            
+            val outputStream = FileOutputStream(imageFile)
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            outputStream.close()
+            
+            Log.d(TAG, "Image saved successfully: ${imageFile.absolutePath}")
+            promise.resolve(imageFile.absolutePath)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving label image", e)
+            promise.reject("SAVE_IMAGE_ERROR", "Failed to save image", e)
+        }
+    }
+
+    /**
+     * Process image for TSPL printing with DPI scaling and monochrome conversion
+     * This moves heavy image processing to native side
+     */
+    @ReactMethod
+    fun processImageForPrinting(
+        imagePath: String,
+        labelWidthMm: Int,
+        labelHeightMm: Int,
+        promise: Promise
+    ) {
+        try {
+            Log.d(TAG, "Processing image for printing: $imagePath")
+            
+            // Load image from file
+            val bitmap = BitmapFactory.decodeFile(imagePath)
+            if (bitmap == null) {
+                promise.reject("IMAGE_LOAD_ERROR", "Failed to load image from path")
+                return
+            }
+            
+            // Scale to printer DPI
+            val scaledBitmap = scaleBitmapToPrinterDPI(bitmap, labelWidthMm, labelHeightMm)
+            
+            // Convert to monochrome
+            val monochromeBitmap = convertToMonochrome(scaledBitmap)
+            
+            // Save processed image
+            val processedPath = saveProcessedImage(monochromeBitmap, imagePath)
+            
+            // Generate TSPL commands
+            val tsplCommands = generateTSPLCommands(processedPath, labelWidthMm, labelHeightMm, monochromeBitmap)
+            
+            val result = Arguments.createMap().apply {
+                putString("processedImagePath", processedPath)
+                putString("tsplCommands", tsplCommands)
+                putInt("imageWidth", monochromeBitmap.width)
+                putInt("imageHeight", monochromeBitmap.height)
+            }
+            
+            Log.d(TAG, "Image processing completed successfully")
+            promise.resolve(result)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing image for printing", e)
+            promise.reject("PROCESS_IMAGE_ERROR", "Failed to process image", e)
+        }
+    }
+
+    /**
+     * Synchronous version of processImageForPrinting for internal use
+     */
+    private fun processImageForPrintingSync(
+        imagePath: String,
+        labelWidthMm: Int,
+        labelHeightMm: Int
+    ): ReadableMap {
+        Log.d(TAG, "Processing image for printing (sync): $imagePath")
+        
+        // Load image from file
+        val bitmap = BitmapFactory.decodeFile(imagePath)
+        if (bitmap == null) {
+            throw RuntimeException("Failed to load image from path")
+        }
+        
+        // Scale to printer DPI
+        val scaledBitmap = scaleBitmapToPrinterDPI(bitmap, labelWidthMm, labelHeightMm)
+        
+        // Convert to monochrome
+        val monochromeBitmap = convertToMonochrome(scaledBitmap)
+        
+        // Save processed image
+        val processedPath = saveProcessedImage(monochromeBitmap, imagePath)
+        
+        // Generate TSPL commands
+        val tsplCommands = generateTSPLCommands(processedPath, labelWidthMm, labelHeightMm, monochromeBitmap)
+        
+        val result = Arguments.createMap().apply {
+            putString("processedImagePath", processedPath)
+            putString("tsplCommands", tsplCommands)
+            putInt("imageWidth", monochromeBitmap.width)
+            putInt("imageHeight", monochromeBitmap.height)
+        }
+        
+        Log.d(TAG, "Image processing completed successfully (sync)")
+        return result
+    }
+
+    /**
+     * Print TSPL commands with automatic chunking for BLE
+     * This prevents BLE packet overflow
+     */
+    @ReactMethod
+    fun printTSPLChunked(tsplCommands: String, promise: Promise) {
+        when (currentConnectionType) {
+            ConnectionType.CLASSIC -> printClassic(tsplCommands, promise)
+            ConnectionType.BLE -> printBLEChunked(tsplCommands, promise)
+            ConnectionType.DUAL -> printDualChunked(tsplCommands, promise)
+            ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
+        }
+    }
+
+    /**
+     * Print image directly from file path with native processing
+     * This is the main optimized printing method
+     */
+    @ReactMethod
+    fun printImageFromFile(
+        imagePath: String,
+        labelWidthMm: Int,
+        labelHeightMm: Int,
+        promise: Promise
+    ) {
+        try {
+            Log.d(TAG, "Printing image from file: $imagePath")
+            
+            // Process the image and print directly
+            try {
+                val result = processImageForPrintingSync(imagePath, labelWidthMm, labelHeightMm)
+                val tsplCommands = result.getString("tsplCommands")
+                
+                // Print with chunking
+                printTSPLChunked(tsplCommands!!, promise)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing image for printing", e)
+                promise.reject("PROCESS_ERROR", "Failed to process image", e)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error printing image from file", e)
+            promise.reject("PRINT_IMAGE_ERROR", "Failed to print image", e)
+        }
+    }
+
+    // ===============================================================================
+    // PRIVATE HELPER METHODS FOR IMAGE PROCESSING
+    // ===============================================================================
+
+    /**
+     * Scale bitmap to match printer DPI
+     */
+    private fun scaleBitmapToPrinterDPI(bitmap: Bitmap, labelWidthMm: Int, labelHeightMm: Int): Bitmap {
+        // Convert mm to dots at printer DPI
+        val targetWidth = (labelWidthMm * MM_TO_DOTS_FACTOR).roundToInt()
+        val targetHeight = (labelHeightMm * MM_TO_DOTS_FACTOR).roundToInt()
+        
+        Log.d(TAG, "Scaling bitmap from ${bitmap.width}x${bitmap.height} to ${targetWidth}x${targetHeight}")
+        
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+    }
+
+    /**
+     * Convert bitmap to monochrome (black and white)
+     */
+    private fun convertToMonochrome(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        
+        // Create monochrome bitmap
+        val monochromeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(monochromeBitmap)
+        
+        // Create paint for monochrome conversion
+        val paint = Paint().apply {
+            colorFilter = android.graphics.ColorMatrixColorFilter(
+                floatArrayOf(
+                    0.299f, 0.587f, 0.114f, 0f, 0f,
+                    0.299f, 0.587f, 0.114f, 0f, 0f,
+                    0.299f, 0.587f, 0.114f, 0f, 0f,
+                    0f, 0f, 0f, 1f, 0f
+                )
+            )
+        }
+        
+        // Draw with grayscale filter
+        canvas.drawBitmap(bitmap, 0f, 0f, paint)
+        
+        // Apply threshold for black/white conversion
+        val pixels = IntArray(width * height)
+        monochromeBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            val gray = (Color.red(pixel) + Color.green(pixel) + Color.blue(pixel)) / 3
+            val threshold = 128
+            pixels[i] = if (gray > threshold) Color.WHITE else Color.BLACK
+        }
+        
+        monochromeBitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        
+        Log.d(TAG, "Converted to monochrome: ${width}x${height}")
+        return monochromeBitmap
+    }
+
+    /**
+     * Save processed image to file
+     */
+    private fun saveProcessedImage(bitmap: Bitmap, originalPath: String): String {
+        val cacheDir = reactApplicationContext.cacheDir
+        val filename = "processed_${File(originalPath).name}"
+        val processedFile = File(cacheDir, filename)
+        
+        val outputStream = FileOutputStream(processedFile)
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+        outputStream.close()
+        
+        Log.d(TAG, "Processed image saved: ${processedFile.absolutePath}")
+        return processedFile.absolutePath
+    }
+
+    /**
+     * Generate TSPL commands for image printing
+     */
+    private fun generateTSPLCommands(imagePath: String, labelWidthMm: Int, labelHeightMm: Int, bitmap: Bitmap): String {
+        val tspl = StringBuilder()
+        
+        // Initialize label
+        tspl.append("SIZE ${labelWidthMm}mm,${labelHeightMm}mm\n")
+        tspl.append("GAPSENSOR\n")
+        tspl.append("GAP 3mm,0mm\n")
+        tspl.append("DIRECTION 0\n")
+        tspl.append("DENSITY 8\n")
+        tspl.append("CLS\n")
+        
+        // Add image command (PUTBMP for TSPL)
+        tspl.append("PUTBMP 0,0,\"$imagePath\",0\n")
+        
+        // Print command
+        tspl.append("PRINT 1\n")
+        
+        Log.d(TAG, "Generated TSPL commands for ${bitmap.width}x${bitmap.height} image")
+        return tspl.toString()
+    }
+
+    /**
+     * Print BLE data with automatic chunking
+     */
+    private fun printBLEChunked(data: String, promise: Promise) {
+        if (bleWriteCharacteristic == null) {
+            promise.reject("BLE_PRINT_ERROR", "No write characteristic found")
+            return
+        }
+
+        Thread {
+            try {
+                val bytes = data.toByteArray(Charsets.UTF_8)
+                val chunks = bytes.toList().chunked(BLE_CHUNK_SIZE)
+                
+                Log.d(TAG, "Sending ${chunks.size} chunks of ${bytes.size} bytes")
+                
+                for ((index, chunk) in chunks.withIndex()) {
+                    val chunkArray = chunk.toByteArray()
+                    bleWriteCharacteristic?.value = chunkArray
+                    bleGatt?.writeCharacteristic(bleWriteCharacteristic)
+                    
+                    Log.d(TAG, "Sent chunk ${index + 1}/${chunks.size} (${chunkArray.size} bytes)")
+                    
+                    // Add delay between chunks to prevent overflow
+                    if (index < chunks.size - 1) {
+                        Thread.sleep(BLE_CHUNK_DELAY)
+                    }
+                }
+                
+                promise.resolve(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in BLE chunked printing", e)
+                promise.reject("BLE_PRINT_ERROR", "Failed to print via BLE", e)
+            }
+        }.start()
+    }
+
+    /**
+     * Print dual mode with chunking
+     */
+    private fun printDualChunked(data: String, promise: Promise) {
+        when (currentConnectionType) {
+            ConnectionType.BLE -> printBLEChunked(data, promise)
+            ConnectionType.CLASSIC -> printClassic(data, promise)
+            else -> promise.reject("PRINT_ERROR", "Invalid connection type")
+        }
+    }
+
+    // ===============================================================================
+    // EXISTING METHODS (KEPT FOR BACKWARD COMPATIBILITY)
+    // ===============================================================================
 
     @ReactMethod
     fun isBluetoothEnabled(promise: Promise) {
@@ -268,20 +620,16 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
 
     @ReactMethod
     fun printTSPL(tsplCommands: String, promise: Promise) {
-        when (currentConnectionType) {
-            ConnectionType.CLASSIC -> printClassic(tsplCommands, promise)
-            ConnectionType.BLE -> printBLE(tsplCommands, promise)
-            ConnectionType.DUAL -> printDual(tsplCommands, promise)
-            ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
-        }
+        // Use the new chunked printing method
+        printTSPLChunked(tsplCommands, promise)
     }
 
     @ReactMethod
     fun printESC(escCommands: String, promise: Promise) {
         when (currentConnectionType) {
             ConnectionType.CLASSIC -> printClassic(escCommands, promise)
-            ConnectionType.BLE -> printBLE(escCommands, promise)
-            ConnectionType.DUAL -> printDual(escCommands, promise)
+            ConnectionType.BLE -> printBLEChunked(escCommands, promise)
+            ConnectionType.DUAL -> printDualChunked(escCommands, promise)
             ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
         }
     }
@@ -290,8 +638,8 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     fun printZPL(zplCommands: String, promise: Promise) {
         when (currentConnectionType) {
             ConnectionType.CLASSIC -> printClassic(zplCommands, promise)
-            ConnectionType.BLE -> printBLE(zplCommands, promise)
-            ConnectionType.DUAL -> printDual(zplCommands, promise)
+            ConnectionType.BLE -> printBLEChunked(zplCommands, promise)
+            ConnectionType.DUAL -> printDualChunked(zplCommands, promise)
             ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
         }
     }
@@ -446,24 +794,14 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     }
 
     private fun printBLE(data: String, promise: Promise) {
-        if (bleWriteCharacteristic == null) {
-            promise.reject("BLE_PRINT_ERROR", "No write characteristic found")
-            return
-        }
-
-        try {
-            bleWriteCharacteristic?.value = data.toByteArray()
-            bleGatt?.writeCharacteristic(bleWriteCharacteristic)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            promise.reject("BLE_PRINT_ERROR", "Failed to print via BLE", e)
-        }
+        // Use chunked printing for BLE
+        printBLEChunked(data, promise)
     }
 
     private fun printDual(data: String, promise: Promise) {
         // Try current connection type first
         when (currentConnectionType) {
-            ConnectionType.BLE -> printBLE(data, promise)
+            ConnectionType.BLE -> printBLEChunked(data, promise)
             ConnectionType.CLASSIC -> printClassic(data, promise)
             else -> promise.reject("PRINT_ERROR", "Invalid connection type")
         }

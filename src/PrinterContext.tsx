@@ -1,10 +1,29 @@
-import React, {createContext, useContext, useState, ReactNode} from 'react';
-import {NativeModules} from 'react-native';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  ReactNode,
+  useRef,
+  useEffect,
+  useCallback,
+} from 'react';
 import {
-  generate56x31Label,
-  generateComplexLabel,
+  generateDirectTSPLLabel,
   generatePPDSLabel,
+  generateIngredientLabel,
+  generateMenuItemLabel,
 } from '../tsplUtils';
+import {generateTSCLabelContent} from './utils/labelManagement';
+import PrintSpooler, {PrintJob} from './services/printSpooler';
+import {apiService} from './services/api';
+
+// Conditional import for NativeModules to handle React Native version differences
+let NativeModules: any;
+try {
+  NativeModules = require('react-native').NativeModules;
+} catch (error) {
+  NativeModules = {};
+}
 
 // Types
 interface BluetoothDevice {
@@ -23,6 +42,14 @@ interface PrinterContextType {
   isScanning: boolean;
   isConnecting: boolean;
   isPrinting: boolean;
+  printQueue: PrintJob[];
+  queueStatus: {
+    totalJobs: number;
+    activeJobs: number;
+    pendingJobs: number;
+    failedJobs: number;
+    isProcessing: boolean;
+  };
 
   // Actions
   setIsBluetoothEnabled: (enabled: boolean) => void;
@@ -41,42 +68,130 @@ interface PrinterContextType {
   disconnectDevice: () => Promise<void>;
   getConnectionStatus: () => Promise<any>;
   refreshConnectionStatus: () => Promise<void>;
-  printHelloWorld: () => Promise<void>;
-  printCustomLabel: (
-    text: string,
-    barcode?: string,
-    qrCode?: string,
+
+  // TSPL direct printing function
+  printTSPLLabels: (
+    printQueue: any[],
+    ingredients: any[],
+    menuItems: any[],
+    customExpiry: Record<string, string>,
+    initials: string,
+    storageInstructions?: string,
+    companyName?: string,
   ) => Promise<void>;
-  printComplexLabel: (labelData: {
-    header: string;
-    expiryLine?: string;
-    printedLine?: string;
-    ingredientsLine?: string;
-    initialsLine?: string;
-  }) => Promise<void>;
-  printPPDSLabel: (labelData: {
-    productName: string;
-    ingredients: string[];
-    allergens: string[];
-    expiryDate: string;
-    storageInstructions: string;
-    companyName?: string;
-  }) => Promise<void>;
-  printTestLabel: () => Promise<void>;
-  printESCTest: () => Promise<void>;
+
+  // Spooler functions
+  addToPrintQueue: (
+    labelData: any,
+    quantity?: number,
+    priority?: 'high' | 'normal' | 'low',
+    userId?: string,
+    sessionId?: string,
+  ) => string;
+  removeFromPrintQueue: (jobId: string) => boolean;
+  clearPrintQueue: () => void;
+  cancelPrintJob: (jobId: string) => boolean;
+  cancelAllPrintJobs: () => void;
+  pausePrintQueue: () => void;
+  resumePrintQueue: () => void;
+
+  // Load balancing and security functions
+  addPrinterInstance: (
+    id: string,
+    name: string,
+    connectionType: 'bluetooth' | 'network' | 'usb',
+    address: string,
+    maxLoad?: number,
+  ) => void;
+  removePrinterInstance: (id: string) => boolean;
+  updatePrinterHealth: (
+    id: string,
+    isHealthy: boolean,
+    currentLoad: number,
+  ) => void;
+  getSystemInfo: () => any;
+  performMemoryCleanup: () => void;
+
+  // Simple custom label printing function
+  printSimpleCustomLabel: (
+    text: string,
+    expiryDate: string,
+    initials: string,
+    ingredients?: string[],
+    allergens?: string[],
+    storageInstructions?: string,
+    companyName?: string,
+  ) => Promise<void>;
 }
 
 const PrinterContext = createContext<PrinterContextType | undefined>(undefined);
 
 export const usePrinter = () => {
-  console.log('🔧 usePrinter: Called');
+  // console.log('🔧 usePrinter: Called');
   const context = useContext(PrinterContext);
-  console.log('🔧 usePrinter: Context value:', context);
+  // console.log('🔧 usePrinter: Context value:', context);
+
+  // Add a small delay to allow context to initialize
   if (!context) {
-    console.error('🔧 usePrinter: Context is null/undefined');
-    throw new Error('usePrinter must be used within a PrinterProvider');
+    console.warn('🔧 usePrinter: Context not ready yet, waiting...');
+    // Return a default context object instead of throwing an error
+    return {
+      // State
+      isBluetoothEnabled: false,
+      devices: [],
+      connectedDevice: null,
+      isScanning: false,
+      isConnecting: false,
+      isPrinting: false,
+      printQueue: [],
+      queueStatus: {
+        totalJobs: 0,
+        activeJobs: 0,
+        pendingJobs: 0,
+        failedJobs: 0,
+        isProcessing: false,
+        isInitialized: false,
+      },
+
+      // Actions
+      setIsBluetoothEnabled: () => {},
+      setDevices: () => {},
+      setConnectedDevice: () => {},
+      setIsScanning: () => {},
+      setIsConnecting: () => {},
+      setIsPrinting: () => {},
+
+      // Functions
+      checkBluetoothStatus: async () => {},
+      enableBluetooth: async () => {},
+      listPairedDevices: async () => {},
+      scanForDevices: async () => {},
+      connectToDevice: async () => {},
+      disconnectDevice: async () => {},
+      getConnectionStatus: async () => ({connected: false, device: null}),
+      refreshConnectionStatus: async () => {},
+      printTSPLLabels: async () => {},
+      printSimpleCustomLabel: async () => {},
+
+      // Spooler functions
+      addToPrintQueue: () => '',
+      removeFromPrintQueue: () => false,
+      clearPrintQueue: () => {},
+      cancelPrintJob: () => false,
+      cancelAllPrintJobs: () => {},
+      pausePrintQueue: () => {},
+      resumePrintQueue: () => {},
+
+      // Load balancing and security functions
+      addPrinterInstance: () => {},
+      removePrinterInstance: () => false,
+      updatePrinterHealth: () => {},
+      getSystemInfo: () => null,
+      performMemoryCleanup: () => {},
+    };
   }
-  console.log('🔧 usePrinter: Returning context successfully');
+
+  // console.log('🔧 usePrinter: Returning context successfully');
   return context;
 };
 
@@ -85,7 +200,7 @@ interface PrinterProviderProps {
 }
 
 export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
-  console.log('🔧 PrinterProvider: Initializing...');
+  // console.log('🔧 PrinterProvider: Initializing...');
 
   try {
     // Check if PrintBridge is available
@@ -94,7 +209,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       console.error('🔧 PrinterProvider: PrintBridge native module not found');
       throw new Error('PrintBridge native module not found');
     }
-    console.log('🔧 PrinterProvider: PrintBridge module found');
+    // console.log('🔧 PrinterProvider: PrintBridge module found');
   } catch (error) {
     console.error('🔧 PrinterProvider: Error checking PrintBridge:', error);
     // Don't throw here, let the provider continue but log the error
@@ -108,6 +223,17 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   const [isScanning, setIsScanning] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [printQueue, setPrintQueue] = useState<PrintJob[]>([]);
+  const [queueStatus, setQueueStatus] = useState({
+    totalJobs: 0,
+    activeJobs: 0,
+    pendingJobs: 0,
+    failedJobs: 0,
+    isProcessing: false,
+  });
+
+  // Print spooler reference
+  const spoolerRef = useRef<PrintSpooler | null>(null);
 
   // Check Bluetooth status
   const checkBluetoothStatus = async () => {
@@ -217,7 +343,9 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
           // Wait before retry (except on last attempt)
           if (attempt < 3) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise<void>(resolve =>
+              setTimeout(() => resolve(), 1000),
+            );
           }
         }
       }
@@ -272,34 +400,469 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     }
   };
 
-  // Print Hello World
-  const printHelloWorld = async () => {
+  // Print labels using TSPL protocol directly
+  const printTSPLLabels = async (
+    printQueue: any[],
+    ingredients: any[],
+    menuItems: any[],
+    customExpiry: Record<string, string>,
+    initials: string,
+    storageInstructions?: string,
+    companyName?: string,
+  ) => {
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
 
+    if (!printQueue || printQueue.length === 0) {
+      throw new Error('No items in print queue');
+    }
+
     try {
       setIsPrinting(true);
+      console.log('🖨️ Starting TSPL direct printing...');
 
-      // Generate TSPL commands using utility function
-      const tsplCommands = generate56x31Label('Hello World');
-
-      console.log('Sending TSPL commands:', tsplCommands);
       const {PrintBridge} = NativeModules;
-      await PrintBridge.printTSPL(tsplCommands);
+
+      // Process each item in the queue
+      for (const item of printQueue) {
+        const quantity = item.quantity;
+
+        console.log(`🖨️ Printing ${quantity} labels for: ${item.name}`);
+
+        // Generate label data for TSPL printing using the same function as label preview
+        const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+        console.log(
+          `🖨️ Using expiry date for ${item.name}: ${finalExpiryDate} (custom: ${
+            customExpiry[item.uid] ? 'yes' : 'no'
+          })`,
+        );
+
+        const labelContent = generateTSCLabelContent(
+          item.name,
+          item.labelType || 'prep',
+          finalExpiryDate,
+          item.ingredients || [],
+          item.allergens || [],
+          new Date().toISOString().split('T')[0],
+          initials,
+          companyName, // Pass the company name from the function parameter
+        );
+
+        const labelData = {
+          header: labelContent.header,
+          expiryLine: labelContent.expiryLine,
+          printedLine: labelContent.printedLine,
+          ingredientsLine: labelContent.ingredientsLine,
+          initialsLine: labelContent.initialsLine,
+          // Add PPDS-specific fields
+          allergenWarningLine: (labelContent as any).allergenWarningLine,
+          storageInstructions: (labelContent as any).storageInstructions,
+        };
+
+        // Generate TSPL commands for this label using appropriate function based on type
+        let tsplCommands: string;
+
+        if (item.labelType === 'ppds') {
+          // Use specialized PPDS label function for larger size and different formatting
+          // For PPDS labels, we need to pass the full ingredient objects for proper allergen display
+          const ppdsLabelData = {
+            ...labelData,
+            // Use the expiry date from the print queue item (prioritize custom expiry)
+            expiryLine: `Use by: ${customExpiry[item.uid] || item.expiryDate}`,
+            allergenWarningLine: item.allergens
+              ? item.allergens.join(', ')
+              : undefined,
+            // Pass storage instructions from the function parameter
+            storageInstructions:
+              storageInstructions ||
+              'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+            // Set initials line to include company name for "Prepared by" line
+            initialsLine: companyName
+              ? `Prepared by: ${companyName}`
+              : 'Prepared by: InstaLabel Ltd',
+            fullIngredients:
+              item.type === 'menu' && item.ingredients
+                ? ingredients.filter((ing: any) =>
+                    item.ingredients.includes(ing.ingredientName),
+                  )
+                : undefined,
+          };
+          console.log('🔍 PPDS Label Data:', ppdsLabelData);
+          tsplCommands = generatePPDSLabel(ppdsLabelData);
+        } else if (item.type === 'ingredients') {
+          // Use generateIngredientLabel for ingredient labels (our improved function)
+          console.log(
+            '🥬 Using generateIngredientLabel for ingredient:',
+            item.name,
+          );
+
+          // Find the ingredient object from the ingredients array
+          const ingredient = ingredients.find(
+            ing => ing.ingredientName === item.name,
+          );
+          if (ingredient) {
+            console.log('✅ Found ingredient object:', ingredient);
+            // Pass the expiry date from the print queue item (prioritize custom expiry)
+            tsplCommands = generateIngredientLabel(
+              ingredient,
+              customExpiry[item.uid] || item.expiryDate,
+              {dpi: 203},
+              item.customInitials || initials,
+            );
+          } else {
+            // Fallback to standard label if ingredient not found
+            console.warn(
+              `⚠️ Ingredient not found for ${item.name}, using fallback`,
+            );
+            tsplCommands = generateDirectTSPLLabel(labelData);
+          }
+        } else if (item.type === 'menu') {
+          // Use generateMenuItemLabel for menu item labels (our improved function)
+          console.log(
+            '🍽️ Using generateMenuItemLabel for menu item:',
+            item.name,
+          );
+          console.log('🔍 Item details:', {
+            name: item.name,
+            type: item.type,
+            labelType: item.labelType,
+            expiryDate: item.expiryDate,
+            ingredients: item.ingredients,
+            allergens: item.allergens,
+          });
+
+          // Find the menu item object from the menuItems array
+          const menuItem = menuItems.find(
+            menu => menu.menuItemName === item.name || menu.name === item.name,
+          );
+          if (menuItem) {
+            console.log('✅ Found menu item object:', menuItem);
+            console.log('🔍 Menu item details:', {
+              menuItemName: menuItem.menuItemName,
+              name: menuItem.name,
+              allergens: menuItem.allergens,
+              ingredients: menuItem.ingredients,
+            });
+
+            // Add the label type from the item
+            menuItem.labelType = item.labelType || 'PREP';
+            // Add the full ingredients array for allergen lookup
+            // Filter ingredients to only include those used in this menu item
+            const menuItemIngredients = ingredients.filter((ing: any) =>
+              item.ingredients.includes(ing.ingredientName),
+            );
+            menuItem.fullIngredients = menuItemIngredients;
+            console.log('🔍 Added fullIngredients:', {
+              count: menuItemIngredients?.length,
+              sample: menuItemIngredients?.slice(0, 3),
+              allIngredients: ingredients?.length,
+              menuItemIngredients: item.ingredients,
+            });
+
+            // Pass the expiry date from the print queue item (prioritize custom expiry)
+            const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+            console.log('🔍 Calling generateMenuItemLabel with:', {
+              menuItem: menuItem,
+              expiryDate: finalExpiryDate,
+              config: {dpi: 203},
+            });
+
+            tsplCommands = generateMenuItemLabel(
+              menuItem,
+              finalExpiryDate,
+              {
+                dpi: 203,
+              },
+              item.customInitials || initials,
+            );
+          } else {
+            // Fallback to standard label if menu item not found
+            console.warn(
+              `⚠️ Menu item not found for ${item.name}, using fallback`,
+            );
+            tsplCommands = generateDirectTSPLLabel(labelData);
+          }
+        } else {
+          // Use standard label function for other label types
+          tsplCommands = generateDirectTSPLLabel(labelData);
+        }
+
+        // Print the label quantity times
+        for (let i = 0; i < quantity; i++) {
+          console.log(
+            `🖨️ Printing label ${i + 1}/${quantity} for ${item.name}`,
+          );
+
+          await PrintBridge.printTSPL(tsplCommands);
+
+          // Small delay between prints to prevent buffer overflow
+          if (i < quantity - 1) {
+            await new Promise<void>(resolve =>
+              setTimeout(() => resolve(), 500),
+            );
+          }
+        }
+
+        // Log the print action to backend for tracking/auditing
+        try {
+          await apiService.logPrintAction({
+            labelType: item.labelType || 'prep',
+            itemId: item.uid || item.id || '',
+            itemName: item.name,
+            quantity: quantity,
+            expiryDate: customExpiry[item.uid] || item.expiryDate,
+            initial: item.customInitials || initials,
+            labelHeight: item.labelType === 'ppds' ? '80mm' : '40mm',
+            printerUsed: connectedDevice.name || 'Bluetooth Printer',
+            sessionId: apiService.generateSessionId(),
+            selectedItems:
+              item.type === 'complex' ? item.selectedItems : undefined,
+          });
+          console.log(`✅ Print action logged to backend for ${item.name}`);
+        } catch (logError) {
+          console.warn(
+            `⚠️ Failed to log print action for ${item.name}:`,
+            logError,
+          );
+          // Continue even if logging fails - don't stop the print process
+        }
+
+        console.log(
+          `✅ Completed printing ${quantity} labels for ${item.name}`,
+        );
+      }
+
+      console.log('✅ TSPL direct printing completed successfully');
     } catch (error) {
-      console.error('Error printing:', error);
+      console.error('❌ Error in TSPL direct printing:', error);
       throw error;
     } finally {
       setIsPrinting(false);
     }
   };
 
-  // Print custom label with 56x31mm size
-  const printCustomLabel = async (
+  // Initialize print spooler
+  useEffect(() => {
+    if (!spoolerRef.current) {
+      // Create the actual print function that the spooler will use
+      const actualPrintFunction = async (labelData: any) => {
+        if (!connectedDevice) {
+          throw new Error('No device connected');
+        }
+
+        const {PrintBridge} = NativeModules;
+
+        // Determine the type of label and generate appropriate commands
+        let tsplCommands: string;
+
+        try {
+          if (labelData.type === 'complex') {
+            tsplCommands = generateDirectTSPLLabel(labelData);
+          } else {
+            // Default to a simple label if type is not specified or unknown
+            const simpleLabelData = {
+              header: labelData.text || 'Label',
+              expiryLine: labelData.expiryDate || '',
+              printedLine: `Printed: ${new Date().toISOString().split('T')[0]}`,
+              initialsLine: labelData.initials || '',
+              ingredientsLine: labelData.ingredients || [],
+              allergenWarningLine: undefined,
+              storageInstructions: undefined,
+            };
+            tsplCommands = generateDirectTSPLLabel(simpleLabelData);
+          }
+
+          console.log('📝 Generated TSPL commands:', tsplCommands);
+          console.log('📏 TSPL commands length:', tsplCommands.length);
+
+          await PrintBridge.printTSPL(tsplCommands);
+          console.log('✅ PrintBridge.printTSPL completed successfully');
+        } catch (error) {
+          console.error('❌ Error in actualPrintFunction:', error);
+          console.error('❌ Label data:', JSON.stringify(labelData, null, 2));
+          throw error;
+        }
+      };
+
+      spoolerRef.current = new PrintSpooler(actualPrintFunction, {
+        maxConcurrentJobs: 3, // Increased for load balancing
+        retryDelay: 2000,
+        maxRetries: 3,
+        jobTimeout: 30000,
+        // Load balancing config
+        maxJobSize: 5 * 1024 * 1024, // 5MB
+        maxQueueSize: 100,
+        rateLimitPerMinute: 30,
+        // Security config
+        enableJobValidation: true,
+        enableRateLimiting: true,
+        enableChecksumValidation: true,
+        // Memory management
+        maxCompletedJobsInMemory: 50,
+        cleanupInterval: 5 * 60 * 1000, // 5 minutes
+        maxImageSize: 2 * 1024 * 1024, // 2MB
+      });
+
+      console.log(
+        '🖨️ Print spooler initialized with load balancing and security features',
+      );
+    }
+  }, [connectedDevice]);
+
+  // Add printer instance to spooler when device connects
+  useEffect(() => {
+    if (spoolerRef.current && connectedDevice) {
+      // Add the connected device as a printer instance for load balancing
+      spoolerRef.current.addPrinterInstance(
+        connectedDevice.id,
+        connectedDevice.name || 'Bluetooth Printer',
+        'bluetooth',
+        connectedDevice.address,
+        5, // Max load of 5 concurrent jobs
+      );
+      console.log('🖨️ Added connected device to spooler load balancer');
+    }
+  }, [connectedDevice]);
+
+  // Update queue status periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (spoolerRef.current) {
+        const status = spoolerRef.current.getQueueStatus();
+        setQueueStatus(status);
+        setPrintQueue(spoolerRef.current.getAllJobs());
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Cleanup on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (spoolerRef.current) {
+        spoolerRef.current.destroy();
+      }
+    };
+  }, []);
+
+  // Spooler functions
+  const addToPrintQueue = (
+    labelData: any,
+    quantity: number = 1,
+    priority: 'high' | 'normal' | 'low' = 'normal',
+    userId?: string,
+    sessionId?: string,
+  ): string => {
+    if (!spoolerRef.current) {
+      throw new Error('Print spooler not initialized');
+    }
+    return spoolerRef.current.addJob(
+      labelData,
+      quantity,
+      priority,
+      userId,
+      sessionId,
+    );
+  };
+
+  const removeFromPrintQueue = (jobId: string): boolean => {
+    if (!spoolerRef.current) {
+      return false;
+    }
+    return spoolerRef.current.removeJob(jobId);
+  };
+
+  const clearPrintQueue = (): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.clearQueue();
+    }
+  };
+
+  const cancelPrintJob = (jobId: string): boolean => {
+    if (!spoolerRef.current) {
+      return false;
+    }
+    return spoolerRef.current.cancelJob(jobId);
+  };
+
+  const cancelAllPrintJobs = (): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.cancelAllJobs();
+    }
+  };
+
+  const pausePrintQueue = (): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.pause();
+    }
+  };
+
+  const resumePrintQueue = (): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.resume();
+    }
+  };
+
+  // Load balancing and security functions
+  const addPrinterInstance = (
+    id: string,
+    name: string,
+    connectionType: 'bluetooth' | 'network' | 'usb',
+    address: string,
+    maxLoad: number = 5,
+  ): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.addPrinterInstance(
+        id,
+        name,
+        connectionType,
+        address,
+        maxLoad,
+      );
+    }
+  };
+
+  const removePrinterInstance = (id: string): boolean => {
+    if (spoolerRef.current) {
+      return spoolerRef.current.removePrinterInstance(id);
+    }
+    return false;
+  };
+
+  const updatePrinterHealth = (
+    id: string,
+    isHealthy: boolean,
+    currentLoad: number,
+  ): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.updatePrinterHealth(id, isHealthy, currentLoad);
+    }
+  };
+
+  const getSystemInfo = (): any => {
+    if (spoolerRef.current) {
+      return spoolerRef.current.getSystemInfo();
+    }
+    return null;
+  };
+
+  const performMemoryCleanup = (): void => {
+    if (spoolerRef.current) {
+      spoolerRef.current.cleanupOldJobs(24); // Clean up jobs older than 24 hours
+    }
+  };
+
+  // Simple custom label printing function
+  const printSimpleCustomLabel = async (
     text: string,
-    barcode?: string,
-    qrCode?: string,
+    expiryDate: string,
+    initials: string,
+    ingredients?: string[],
+    allergens?: string[],
+    storageInstructions?: string,
+    companyName?: string,
   ) => {
     if (!connectedDevice) {
       throw new Error('No device connected');
@@ -307,132 +870,68 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
     try {
       setIsPrinting(true);
-
-      // Generate TSPL commands using utility function
-      const tsplCommands = generate56x31Label(text, barcode, qrCode);
+      console.log('🖨️ Starting simple custom label printing...');
 
       const {PrintBridge} = NativeModules;
+
+      const labelContent = generateTSCLabelContent(
+        text,
+        'custom',
+        expiryDate,
+        ingredients || [],
+        allergens || [],
+        new Date().toISOString().split('T')[0],
+        initials,
+        companyName,
+      );
+
+      const labelData = {
+        header: labelContent.header,
+        expiryLine: labelContent.expiryLine,
+        printedLine: labelContent.printedLine,
+        ingredientsLine: labelContent.ingredientsLine,
+        initialsLine: labelContent.initialsLine,
+        allergenWarningLine: undefined,
+        storageInstructions: storageInstructions,
+      };
+
+      const tsplCommands = generateDirectTSPLLabel(labelData);
+
+      console.log(
+        '📝 Generated TSPL commands for simple custom label:',
+        tsplCommands,
+      );
+      console.log('📏 TSPL commands length:', tsplCommands.length);
+
       await PrintBridge.printTSPL(tsplCommands);
+      console.log('✅ Simple custom label printed successfully');
+
+      // Log the print action to backend for tracking/auditing
+      try {
+        await apiService.logPrintAction({
+          labelType: 'custom',
+          itemId: text,
+          itemName: text,
+          quantity: 1,
+          expiryDate: expiryDate,
+          initial: initials,
+          labelHeight: '40mm', // Assuming a standard label height
+          printerUsed: connectedDevice.name || 'Bluetooth Printer',
+          sessionId: apiService.generateSessionId(),
+          selectedItems: undefined,
+        });
+        console.log(
+          `✅ Simple custom label print action logged to backend for ${text}`,
+        );
+      } catch (logError) {
+        console.warn(
+          `⚠️ Failed to log simple custom label print action for ${text}:`,
+          logError,
+        );
+        // Continue even if logging fails - don't stop the print process
+      }
     } catch (error) {
-      console.error('Error printing custom label:', error);
-      throw error;
-    } finally {
-      setIsPrinting(false);
-    }
-  };
-
-  // Print complex label with header bar, expiry line, printed line, and ingredients
-  const printComplexLabel = async (labelData: {
-    header: string;
-    expiryLine?: string;
-    printedLine?: string;
-    ingredientsLine?: string;
-    initialsLine?: string;
-  }) => {
-    if (!connectedDevice) {
-      throw new Error('No device connected');
-    }
-
-    try {
-      setIsPrinting(true);
-
-      // Generate TSPL commands using the complex label function
-      const tsplCommands = generateComplexLabel(labelData);
-
-      const {PrintBridge} = NativeModules;
-      await PrintBridge.printTSPL(tsplCommands);
-    } catch (error) {
-      console.error('Error printing complex label:', error);
-      throw error;
-    } finally {
-      setIsPrinting(false);
-    }
-  };
-
-  // Print PPDS label with 56mm × 80mm dimensions
-  const printPPDSLabel = async (labelData: {
-    productName: string;
-    ingredients: string[];
-    allergens: string[];
-    expiryDate: string;
-    storageInstructions: string;
-    companyName?: string;
-  }) => {
-    if (!connectedDevice) {
-      throw new Error('No device connected');
-    }
-
-    try {
-      setIsPrinting(true);
-
-      // Generate TSPL commands using the PPDS label function
-      const tsplCommands = generatePPDSLabel(labelData);
-
-      const {PrintBridge} = NativeModules;
-      await PrintBridge.printTSPL(tsplCommands);
-    } catch (error) {
-      console.error('Error printing PPDS label:', error);
-      throw error;
-    } finally {
-      setIsPrinting(false);
-    }
-  };
-
-  // Test function with different TSPL formats
-  const printTestLabel = async () => {
-    if (!connectedDevice) {
-      throw new Error('No device connected');
-    }
-
-    try {
-      setIsPrinting(true);
-
-      // Try a very simple TSPL command first
-      const simpleCommands = [
-        'SIZE 50,30',
-        'GAP 2,0',
-        'DIRECTION 0',
-        'CLS',
-        'TEXT 100,100,"3",0,1,1,"TEST"',
-        'PRINT 1',
-      ].join('\n');
-
-      console.log('Sending simple test commands:', simpleCommands);
-      const {PrintBridge} = NativeModules;
-      await PrintBridge.printTSPL(simpleCommands);
-    } catch (error) {
-      console.error('Error printing test label:', error);
-      throw error;
-    } finally {
-      setIsPrinting(false);
-    }
-  };
-
-  // Try ESC/POS commands instead of TSPL
-  const printESCTest = async () => {
-    if (!connectedDevice) {
-      throw new Error('No device connected');
-    }
-
-    try {
-      setIsPrinting(true);
-
-      // Simple ESC/POS commands
-      const escCommands = [
-        '\x1B\x40', // Initialize printer
-        '\x1B\x61\x01', // Center alignment
-        '\x1B\x21\x10', // Double height and width
-        'TEST LABEL',
-        '\x1B\x21\x00', // Normal size
-        '\n\n\n\n', // Feed paper
-        '\x1B\x69', // Cut paper
-      ].join('');
-
-      console.log('Sending ESC/POS commands');
-      const {PrintBridge} = NativeModules;
-      await PrintBridge.printESC(escCommands);
-    } catch (error) {
-      console.error('Error printing ESC test:', error);
+      console.error('❌ Error in simple custom label printing:', error);
       throw error;
     } finally {
       setIsPrinting(false);
@@ -447,6 +946,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     isScanning,
     isConnecting,
     isPrinting,
+    printQueue,
+    queueStatus,
 
     // Actions
     setIsBluetoothEnabled,
@@ -465,15 +966,27 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     disconnectDevice,
     getConnectionStatus,
     refreshConnectionStatus,
-    printHelloWorld,
-    printCustomLabel,
-    printComplexLabel,
-    printPPDSLabel,
-    printTestLabel,
-    printESCTest,
+    printTSPLLabels,
+    printSimpleCustomLabel,
+
+    // Spooler functions
+    addToPrintQueue,
+    removeFromPrintQueue,
+    clearPrintQueue,
+    cancelPrintJob,
+    cancelAllPrintJobs,
+    pausePrintQueue,
+    resumePrintQueue,
+
+    // Load balancing and security functions
+    addPrinterInstance,
+    removePrinterInstance,
+    updatePrinterHealth,
+    getSystemInfo,
+    performMemoryCleanup,
   };
 
-  console.log('🔧 PrinterProvider: Providing context with value:', value);
+  // console.log('🔧 PrinterProvider: Providing context with value:', value);
 
   return (
     <PrinterContext.Provider value={value}>{children}</PrinterContext.Provider>

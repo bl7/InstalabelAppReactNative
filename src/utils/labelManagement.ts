@@ -1,6 +1,14 @@
 // Label management system for InstaLabel
 
-export type LabelType = 'cooked' | 'prep' | 'ppds' | 'use-first' | 'defrost';
+import {Ingredient, Allergen} from '../services/api';
+
+export type LabelType =
+  | 'cooked'
+  | 'prep'
+  | 'ppds'
+  | 'use-first'
+  | 'defrost'
+  | 'default';
 export type LabelHeight = '31mm' | '40mm' | '56mm' | '80mm';
 
 // Label type configuration
@@ -57,21 +65,32 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     description: 'For items that need immediate use',
     defaultExpiryDays: 0,
     format: 'expires',
-    showPrintedDate: true,
-    showIngredients: true,
-    showAllergens: true,
+    showPrintedDate: false, // No printed date for Use First labels
+    showIngredients: false, // No ingredients for Use First labels
+    showAllergens: false, // No allergens for Use First labels
     specialIndicators: ['USE FIRST'],
   },
   defrost: {
     type: 'defrost',
     name: 'Defrost',
     description: 'For frozen items that have been defrosted',
-    defaultExpiryDays: 2,
+    defaultExpiryDays: 1, // 24 hours
     format: 'expires',
     showPrintedDate: true,
     showIngredients: true,
     showAllergens: true,
     specialIndicators: ['DEFROST'],
+  },
+  default: {
+    type: 'default',
+    name: 'Default',
+    description: 'Standard label without type indicator',
+    defaultExpiryDays: 2,
+    format: 'expires',
+    showPrintedDate: true,
+    showIngredients: true,
+    showAllergens: true,
+    specialIndicators: [], // No special indicators for default type
   },
 };
 
@@ -135,7 +154,30 @@ export function parseDate(dateString: string): Date | null {
 
 // Function to validate expiry date
 export function validateExpiryDate(dateString: string): boolean {
-  const date = parseDate(dateString);
+  let date: Date | null = null;
+
+  // Try parsing as DD.MM.YYYY format first
+  date = parseDate(dateString);
+
+  // If that fails, try parsing as YYYY-MM-DD format
+  if (!date && /^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    const parts = dateString.split('-');
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1; // Month is 0-indexed
+    const day = parseInt(parts[2], 10);
+
+    date = new Date(year, month, day);
+
+    // Validate the parsed date
+    if (
+      date.getDate() !== day ||
+      date.getMonth() !== month ||
+      date.getFullYear() !== year
+    ) {
+      date = null;
+    }
+  }
+
   if (!date) return false;
 
   const today = new Date();
@@ -264,16 +306,41 @@ export function getSpecialIndicators(type: LabelType): string[] {
   return LABEL_TYPE_CONFIGS[type].specialIndicators;
 }
 
-// Function to calculate label height in pixels for UI
+// Function to calculate label height in pixels for UI (scaled down for preview)
 export function getLabelHeightPixels(height: LabelHeight): number {
   const heightMap: Record<LabelHeight, number> = {
-    '31mm': 120,
-    '40mm': 150,
-    '56mm': 180, // Slightly taller for better proportions
-    '80mm': 300,
+    '31mm': 174, // 70% of printer dots: 248 * 0.7 = 174
+    '40mm': 224, // 70% of printer dots: 320 * 0.7 = 224
+    '56mm': 313, // 70% of printer dots: 447 * 0.7 = 313
+    '80mm': 447, // 70% of printer dots: 639 * 0.7 = 447
   };
 
-  return heightMap[height] || 150;
+  return heightMap[height] || 224;
+}
+
+// Function to calculate label width in pixels for UI (scaled down for preview)
+export function getLabelWidthPixels(height: LabelHeight): number {
+  // Standard label width is 60mm, PPDS is 56mm
+  const isPPDS = height === '80mm'; // PPDS labels are 80mm height
+  const actualWidth = isPPDS ? 56 : 60; // mm
+
+  // Convert to dots: width × 203 DPI ÷ 25.4
+  const dotsWidth = (actualWidth * 203) / 25.4;
+
+  // Scale down to 70% for preview (more realistic size)
+  return Math.round(dotsWidth * 0.7);
+}
+
+// Function to calculate label height in pixels for capture (full printer size)
+export function getLabelHeightPixelsForCapture(height: LabelHeight): number {
+  const heightMap: Record<LabelHeight, number> = {
+    '31mm': 248, // Full printer dots: 31mm × 203 DPI / 25.4 = 248 dots
+    '40mm': 320, // Full printer dots: 40mm × 203 DPI / 25.4 = 320 dots
+    '56mm': 447, // Full printer dots: 56mm × 203 DPI / 25.4 = 447 dots
+    '80mm': 639, // Full printer dots: 80mm × 203 DPI / 25.4 = 639 dots
+  };
+
+  return heightMap[height] || 320;
 }
 
 // Function to get optimal font size for label height
@@ -294,7 +361,7 @@ export function generateTSCLabelContent(
   labelType: LabelType,
   expiryDate: string,
   ingredients: string[] | Ingredient[],
-  allergens: string[],
+  allergens: string[] | Allergen[],
   printedDate?: string,
   initials?: string,
   companyName?: string,
@@ -304,32 +371,56 @@ export function generateTSCLabelContent(
   printedLine: string;
   ingredientsLine?: string;
   initialsLine?: string;
+  allergenWarningLine?: string;
+  storageInstructions?: string;
 } {
   const config = LABEL_TYPE_CONFIGS[labelType];
 
   // Header is always the item name
   const header = itemName.toUpperCase();
 
-  // For PPDS labels, show Best Before date and ingredients list
+  // For PPDS labels, show Use by date and ingredients list
   if (labelType === 'ppds') {
-    const formatText = getLabelFormatText(labelType);
-    const expiryLine = `${formatText}: ${expiryDate}`;
+    const expiryLine = `Use by: ${expiryDate}`;
 
     let ingredientsLine: string | undefined;
+    let allergenWarningLine: string | undefined;
+
     if (config.showIngredients && ingredients.length > 0) {
       if (config.showAllergens && allergens.length > 0) {
-        // For PPDS: show "Ingredients:" with ingredients and allergen warnings
+        // For PPDS: show ingredients with allergen warnings in parentheses
         const ingredientLines = ingredients.map(ingredient => {
           if (typeof ingredient === 'string') {
-            // If ingredient is a string, just return it
+            // If ingredient is a string, check if it contains allergens
+            const ingredientAllergens = allergens.filter(allergen =>
+              ingredient
+                .toLowerCase()
+                .includes(
+                  typeof allergen === 'string'
+                    ? allergen.toLowerCase()
+                    : allergen.allergenName?.toLowerCase() || '',
+                ),
+            );
+            if (ingredientAllergens.length > 0) {
+              const allergenWarnings = ingredientAllergens
+                .map(a =>
+                  typeof a === 'string'
+                    ? a.toUpperCase()
+                    : a.allergenName?.toUpperCase() || 'UNKNOWN',
+                )
+                .join(', ');
+              return `${ingredient} (${allergenWarnings})`;
+            }
             return ingredient;
           } else {
             // If ingredient is an object, check for allergens
             const ingredientAllergens = ingredient.allergens || [];
             if (ingredientAllergens.length > 0) {
               const allergenWarnings = ingredientAllergens
-                .map(
-                  a => `*${a.allergenName?.toUpperCase() || a.toUpperCase()}*`,
+                .map((a: any) =>
+                  typeof a === 'string'
+                    ? a.toUpperCase()
+                    : a.allergenName?.toUpperCase() || 'UNKNOWN',
                 )
                 .join(', ');
               return `${ingredient.ingredientName} (${allergenWarnings})`;
@@ -337,22 +428,37 @@ export function generateTSCLabelContent(
             return ingredient.ingredientName;
           }
         });
-        ingredientsLine = `Ingredients: ${ingredientLines.join(', ')}`;
+        ingredientsLine = ingredientLines.join(', ');
+
+        // Create allergen warning line for the separate box
+        allergenWarningLine = allergens
+          .map(a =>
+            typeof a === 'string'
+              ? a.toUpperCase()
+              : a.allergenName?.toUpperCase() || 'UNKNOWN',
+          )
+          .join(', ');
       } else {
         // If no allergens, just show ingredients
         const ingredientNames = ingredients.map(ing =>
           typeof ing === 'string' ? ing : ing.ingredientName,
         );
-        ingredientsLine = `Ingredients: ${ingredientNames.join(', ')}`;
+        ingredientsLine = ingredientNames.join(', ');
       }
     }
+
+    // Add storage instructions for PPDS labels
+    const storageInstructions =
+      'Keep refrigerated below 5°C. Consume within 2 days of opening.';
 
     return {
       header,
       expiryLine,
       printedLine: '', // No printed date for PPDS
       ingredientsLine,
-      initialsLine: companyName ? `Prepared By: ${companyName}` : undefined, // Show company name for PPDS
+      allergenWarningLine,
+      storageInstructions,
+      initialsLine: companyName ? `Prepared by: ${companyName}` : undefined, // Show company name for PPDS
     };
   }
 
@@ -369,6 +475,9 @@ export function generateTSCLabelContent(
     const isIngredientLabel = labelType === 'prep' && ingredients.length === 1;
     if (isIngredientLabel) {
       printedLine = `Printed: ${todayFormatted}`;
+    } else if (labelType === 'default') {
+      // For default type, don't show any special indicators
+      printedLine = `Printed: ${todayFormatted}`;
     } else {
       // For menu items, show the special indicator
       const indicator = config.specialIndicators[0] || '';
@@ -377,49 +486,52 @@ export function generateTSCLabelContent(
   }
 
   let ingredientsLine: string | undefined;
+  let allergenWarningLine: string | undefined;
   // Determine if it's an ingredient label (single item, prep type)
   const isIngredientLabel = labelType === 'prep' && ingredients.length === 1;
 
   if (config.showIngredients && ingredients.length > 0) {
     if (isIngredientLabel) {
       // This is an ingredient label
+      if (__DEV__) {
+        console.log(
+          '🔍 generateTSCLabelContent - Ingredient label allergens:',
+          {
+            labelType,
+            allergens,
+            allergensLength: allergens.length,
+            showAllergens: config.showAllergens,
+          },
+        );
+      }
+
       if (allergens.length > 0) {
-        // Show allergen warnings directly for ingredients with allergens
-        const allergenWarnings = allergens
-          .map(a => `*${a.toUpperCase()}*`)
-          .join(', ');
-        ingredientsLine = allergenWarnings;
+        // For ingredient labels, don't show individual allergens in ingredients line
+        // Just show "CONTAINS ALLERGENS" warning
+        ingredientsLine = undefined; // No ingredients line for ingredient labels
+        allergenWarningLine = 'CONTAINS ALLERGENS';
+
+        if (__DEV__) {
+          console.log(
+            '✅ Setting allergenWarningLine for ingredient label:',
+            allergenWarningLine,
+          );
+        }
       }
       // If no allergens for an ingredient label, ingredientsLine remains undefined (nothing to show)
     } else {
-      // This is a menu item label - show ingredients with allergen warnings
+      // This is a menu item label - show only allergens, not all ingredients
       if (config.showAllergens && allergens.length > 0) {
-        // For menu items: show "Contains:" with ingredients and allergen warnings
-        const ingredientLines = ingredients.map(ingredient => {
-          if (typeof ingredient === 'string') {
-            // If ingredient is a string, just return it
-            return ingredient;
-          } else {
-            // If ingredient is an object, check for allergens
-            const ingredientAllergens = ingredient.allergens || [];
-            if (ingredientAllergens.length > 0) {
-              const allergenWarnings = ingredientAllergens
-                .map(
-                  a => `*${a.allergenName?.toUpperCase() || a.toUpperCase()}*`,
-                )
-                .join(', ');
-              return `${ingredient.ingredientName} (${allergenWarnings})`;
-            }
-            return ingredient.ingredientName;
-          }
-        });
-        ingredientsLine = `Contains: ${ingredientLines.join(', ')}`;
-      } else {
-        // If no allergens, just show ingredients
-        const ingredientNames = ingredients.map(ing =>
-          typeof ing === 'string' ? ing : ing.ingredientName,
+        // For menu items: show "Contains:" with only allergens
+        const allergenNames = allergens.map(allergen =>
+          typeof allergen === 'string'
+            ? allergen.toUpperCase()
+            : allergen.allergenName?.toUpperCase() || 'UNKNOWN',
         );
-        ingredientsLine = `Contains: ${ingredientNames.join(', ')}`;
+        ingredientsLine = `Contains: ${allergenNames.join(', ')}`;
+      } else {
+        // If no allergens, show "Does not contain any allergens"
+        ingredientsLine = 'Contains: Does not contain any allergens';
       }
     }
   }
@@ -432,5 +544,7 @@ export function generateTSCLabelContent(
     printedLine,
     ingredientsLine,
     initialsLine,
+    allergenWarningLine, // Now includes allergen warnings for ingredient labels
+    storageInstructions: undefined, // Not used for non-PPDS labels
   };
 }

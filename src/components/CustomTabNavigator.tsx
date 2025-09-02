@@ -6,34 +6,45 @@ import {
   StyleSheet,
   SafeAreaView,
 } from 'react-native';
-import {Cog, Printer, History, Settings, FileText} from 'lucide-react-native';
+import {
+  Cog,
+  Printer,
+  History,
+  Settings,
+  FileText,
+  Edit3,
+} from 'lucide-react-native';
+import FloatingActionButtons from './FloatingActionButtons';
 
 // Import pages
 import SettingsPage from '../pages/SettingsPage';
-import PrintPage from '../pages/PrintPage';
 import PPDsPage from '../pages/PPDsPage';
 import HistoryPage from '../pages/HistoryPage';
 import LabelsPage from '../pages/LabelsPage';
+import CustomLabelPage from '../pages/CustomLabelPage';
 
-type TabType = 'Settings' | 'Print' | 'Logs' | 'PPDS' | 'Labels';
+import PrintQueueStatus from './PrintQueueStatus';
+
+type TabType = 'Settings' | 'Logs' | 'PPDS' | 'Labels' | 'Custom';
 
 const CustomTabNavigator: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabType>('Settings');
+  const [activeTab, setActiveTab] = useState<TabType>('Labels');
+  const [fabActionsVisible, setFabActionsVisible] = useState(false);
 
   const renderTabContent = () => {
     switch (activeTab) {
       case 'Settings':
         return <SettingsPage />;
-      case 'Print':
-        return <PrintPage />;
       case 'Logs':
         return <HistoryPage />;
       case 'PPDS':
         return <PPDsPage />;
       case 'Labels':
         return <LabelsPage />;
+      case 'Custom':
+        return <CustomLabelPage />;
       default:
-        return <SettingsPage />;
+        return <LabelsPage />;
     }
   };
 
@@ -46,7 +57,7 @@ const CustomTabNavigator: React.FC = () => {
       style={[styles.tab, activeTab === tabName && styles.activeTab]}
       onPress={() => setActiveTab(tabName)}>
       <IconComponent
-        size={24}
+        size={20}
         color={activeTab === tabName ? '#8A2BE2' : '#666'}
       />
       <Text
@@ -60,12 +71,19 @@ const CustomTabNavigator: React.FC = () => {
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>{renderTabContent()}</View>
 
+      <PrintQueueStatus />
+
       <View style={styles.tabBar}>
-        {renderTab('Settings', Cog, 'Settings')}
-        {renderTab('Print', Printer, 'Print')}
-        {renderTab('Logs', History, 'Print Sessions')}
+        {renderTab('Labels', FileText, 'Labels')}
         {renderTab('PPDS', Printer, 'PPDS')}
-        {renderTab('Labels', Printer, 'Labels')}
+
+        {/* Center FAB with arch design */}
+        <View style={styles.fabContainer}>
+          <FloatingActionButtons onActionsToggle={setFabActionsVisible} />
+        </View>
+
+        {renderTab('Custom', Edit3, 'ETC.')}
+        {renderTab('Settings', Cog, 'Settings')}
       </View>
     </SafeAreaView>
   );
@@ -84,9 +102,21 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
-    paddingBottom: 10,
-    paddingTop: 10,
-    height: 70,
+    paddingBottom: 8,
+    paddingTop: 8,
+    height: 80, // Increased height to accommodate the arch
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    overflow: 'visible', // Allow the FAB to extend beyond the tab bar
+  },
+  fabContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 80,
+    height: 80,
+    marginTop: -35, // Increased to create more prominent arch effect
+    zIndex: 1000,
   },
   tab: {
     flex: 1,
@@ -98,9 +128,9 @@ const styles = StyleSheet.create({
     // Active tab styling
   },
   tabText: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#666',
-    marginTop: 4,
+    marginTop: 3,
     textAlign: 'center',
   },
   activeTabText: {

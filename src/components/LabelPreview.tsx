@@ -11,6 +11,8 @@ import {
 import {getAllergensFromIngredients} from '../utils/allergenDetection';
 import {
   getLabelHeightPixels,
+  getLabelHeightPixelsForCapture,
+  getLabelWidthPixels,
   getOptimalFontSize,
 } from '../utils/labelManagement';
 
@@ -24,6 +26,7 @@ interface LabelPreviewProps {
   onUpdateLabelType: (uid: string, labelType: LabelType) => void;
   onUpdateExpiry?: (uid: string, expiry: string) => void;
   labelSettings?: Record<string, number>; // Add label settings prop
+  isCaptureMode?: boolean; // Add capture mode prop
 }
 
 const LabelPreview: React.FC<LabelPreviewProps> = ({
@@ -36,15 +39,31 @@ const LabelPreview: React.FC<LabelPreviewProps> = ({
   onUpdateLabelType,
   onUpdateExpiry,
   labelSettings = {}, // Default to empty object
+  isCaptureMode = false, // Default to preview mode
 }) => {
   // Get item details
   const getItemDetails = () => {
     if (item.type === 'ingredients') {
       const ingredient = ingredients.find(i => i.ingredientName === item.name);
+
+      // Debug logging
+      if (__DEV__) {
+        console.log('🔍 LabelPreview - Ingredient details:', {
+          itemName: item.name,
+          foundIngredient: ingredient,
+          ingredientAllergens: ingredient?.allergens,
+          storedAllergens: item.allergens,
+        });
+      }
+
       return {
         name: item.name,
         ingredients: [item.name], // Single ingredient for ingredient labels
-        allergens: ingredient?.allergens.map(a => a.allergenName) || [],
+        // Use stored allergens from PrintQueueItem if available, otherwise from ingredient object
+        allergens:
+          item.allergens && item.allergens.length > 0
+            ? item.allergens
+            : ingredient?.allergens.map(a => a.allergenName) || [],
         expiryDays: ingredient?.expiryDays || 3,
       };
     } else {
@@ -87,11 +106,12 @@ const LabelPreview: React.FC<LabelPreviewProps> = ({
     companyName,
   );
 
-  // Get label height styling - respect the original label height from the item
-  // Only use 80mm if explicitly set in the item, otherwise use default
-  const labelHeight = getLabelHeightPixels(
-    (item.labelHeight as LabelHeight) || '40mm',
-  );
+  // Get label height styling - use full size for capture, scaled for preview
+  const labelHeight = isCaptureMode
+    ? getLabelHeightPixelsForCapture(
+        (item.labelHeight as LabelHeight) || '40mm',
+      )
+    : getLabelHeightPixels((item.labelHeight as LabelHeight) || '40mm');
   const fontSize = getOptimalFontSize(
     (item.labelHeight as LabelHeight) || '40mm',
   );
@@ -156,55 +176,116 @@ const LabelPreview: React.FC<LabelPreviewProps> = ({
             styles.labelPreview,
             {
               height: labelHeight,
-              width: isPPDSLabel ? 56 * 3.78 : 60 * 3.78, // ~212px for PPDS, ~227px for others
+              width: isCaptureMode
+                ? isPPDSLabel
+                  ? 447
+                  : 479 // Full size for capture
+                : getLabelWidthPixels(
+                    (item.labelHeight as LabelHeight) || '40mm',
+                  ), // Use proper width calculation
             },
           ]}>
-          {/* Black Header Bar */}
-          <View style={styles.headerBar}>
+          {/* Header Bar - Only show border for non-PPDS labels */}
+          <View
+            style={[
+              styles.headerBar,
+              !isPPDSLabel && styles.headerBarWithBorder,
+            ]}>
             <Text style={styles.headerText}>{labelContent.header}</Text>
           </View>
 
           {/* White Body */}
           <View style={styles.labelBody}>
-            {/* Expiry Line */}
-            <View style={styles.expiryLine}>
-              <Text style={styles.expiryLabel}>{labelContent.expiryLine}</Text>
-              <Text style={styles.expiryDate}>{formattedExpiryDate}</Text>
-            </View>
-
-            {/* Printed Line with Initials on same line */}
-            {labelContent.printedLine && (
-              <View style={styles.printedLine}>
-                <Text style={styles.printedText}>
-                  {labelContent.printedLine}
-                </Text>
-                {item.labelType === 'ppds' ? (
-                  // For PPDS labels, show company name instead of initials
-                  <Text style={styles.initialsText}>
-                    {companyName ? `Prepared By: ${companyName}` : ''}
-                  </Text>
-                ) : (
-                  // For other label types, show initials
-                  <Text style={styles.initialsText}>{initials}</Text>
+            {/* For PPDS labels, show different layout */}
+            {isPPDSLabel ? (
+              <>
+                {/* Ingredients Section */}
+                {labelContent.ingredientsLine && (
+                  <View style={styles.ingredientsSection}>
+                    <Text style={styles.ingredientsText}>
+                      {labelContent.ingredientsLine}
+                    </Text>
+                  </View>
                 )}
-              </View>
-            )}
 
-            {/* Ingredients Line */}
-            {labelContent.ingredientsLine && (
-              <Text style={styles.ingredientsText}>
-                {labelContent.ingredientsLine}
-              </Text>
-            )}
+                {/* Allergen Warning Box */}
+                {(labelContent as any).allergenWarningLine && (
+                  <View style={styles.allergenWarningBox}>
+                    <Text style={styles.allergenWarningText}>
+                      {(labelContent as any).allergenWarningLine}
+                    </Text>
+                  </View>
+                )}
 
-            {/* Show initials line for PPDS labels only */}
-            {labelContent.initialsLine && item.labelType === 'ppds' && (
-              <Text style={styles.initialsText}>
-                {labelContent.initialsLine}
-              </Text>
-            )}
+                {/* Date Information */}
+                <View style={styles.expiryLine}>
+                  <Text style={styles.expiryLabel}>
+                    {labelContent.expiryLine}
+                  </Text>
+                  <Text style={styles.expiryDate}>{formattedExpiryDate}</Text>
+                </View>
 
-            {/* Remove duplicate initials display - we already show them above */}
+                {/* Packed Date */}
+                <View style={styles.packedLine}>
+                  <Text style={styles.packedText}>
+                    Packed: {new Date().toISOString().split('T')[0]}
+                  </Text>
+                </View>
+
+                {/* Storage Instructions */}
+                {(labelContent as any).storageInstructions && (
+                  <View style={styles.storageSection}>
+                    <Text style={styles.storageText}>
+                      {(labelContent as any).storageInstructions}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Prepared By */}
+                {labelContent.initialsLine && (
+                  <Text style={styles.initialsText}>
+                    {labelContent.initialsLine}
+                  </Text>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Standard label layout for non-PPDS labels */}
+                {/* Expiry Line */}
+                <View style={styles.expiryLine}>
+                  <Text style={styles.expiryLabel}>
+                    {labelContent.expiryLine}
+                  </Text>
+                  <Text style={styles.expiryDate}>{formattedExpiryDate}</Text>
+                </View>
+
+                {/* Printed Line with Initials on same line */}
+                {labelContent.printedLine && (
+                  <View style={styles.printedLine}>
+                    <Text style={styles.printedText}>
+                      {labelContent.printedLine}
+                    </Text>
+                    <Text style={styles.initialsText}>{initials}</Text>
+                  </View>
+                )}
+
+                {/* Ingredients Line */}
+                {labelContent.ingredientsLine && (
+                  <Text style={styles.ingredientsText}>
+                    {labelContent.ingredientsLine}
+                  </Text>
+                )}
+
+                {/* Allergen Warning for Ingredient Labels */}
+                {(labelContent as any).allergenWarningLine && (
+                  <View style={styles.allergenWarningBox}>
+                    <Text style={styles.allergenWarningText}>
+                      {(labelContent as any).allergenWarningLine}
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
           </View>
         </View>
 
@@ -222,7 +303,7 @@ const styles = StyleSheet.create({
   container: {
     backgroundColor: 'white',
     borderRadius: 12,
-    padding: 20,
+    padding: 15,
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 2},
     shadowOpacity: 0.1,
@@ -238,18 +319,27 @@ const styles = StyleSheet.create({
 
   // Preview Section
   previewSection: {
-    marginBottom: 20,
+    marginBottom: 15,
   },
   labelPreview: {
     backgroundColor: '#ffffff',
     borderRadius: 4,
-    padding: 0,
+    padding: 8, // Add padding around the entire label content
     marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#000000',
+    // Removed outer border - no more borderWidth and borderColor
     // Width and height are set dynamically in inline styles
     alignSelf: 'center',
     overflow: 'hidden', // Ensure content doesn't overflow the border
+    maxWidth: '100%', // Prevent horizontal overflow
+    // Add drop shadow to make it look like a real label
+    shadowColor: '#000000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4, // Android shadow
   },
   labelContent: {
     flex: 1,
@@ -272,17 +362,26 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   headerBar: {
-    backgroundColor: '#000000',
-    paddingVertical: 0,
-    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     alignItems: 'center',
-    borderTopLeftRadius: 4,
-    borderTopRightRadius: 4,
     justifyContent: 'center',
     minHeight: 20,
+    // Make the rectangle span the full width of the label
+    alignSelf: 'stretch',
+  },
+  headerBarWithBorder: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    borderRadius: 4,
+    // Remove horizontal margins to make rectangle span full width
+    marginHorizontal: 0,
+    // Ensure the rectangle extends to the edges
+    paddingHorizontal: 8, // Reduce padding to make rectangle wider
   },
   headerText: {
-    color: '#ffffff',
+    color: '#000000',
     fontSize: 11,
     fontWeight: 'bold',
     lineHeight: 20,
@@ -339,6 +438,48 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     lineHeight: 14,
   },
+  // New styles for PPDS specific sections
+  ingredientsSection: {
+    marginBottom: 1,
+    paddingHorizontal: 2,
+  },
+  allergenWarningBox: {
+    backgroundColor: 'transparent',
+    borderRadius: 4,
+    padding: 4,
+    marginBottom: 2,
+    alignItems: 'center',
+  },
+  allergenWarningText: {
+    fontSize: 16,
+    color: '#000000',
+    fontWeight: 'bold',
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  packedLine: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: 1,
+    paddingHorizontal: 2,
+  },
+  packedText: {
+    fontSize: 10,
+    color: '#000000',
+    fontWeight: 'bold',
+    lineHeight: 14,
+  },
+  storageSection: {
+    marginTop: 1,
+    paddingHorizontal: 2,
+  },
+  storageText: {
+    fontSize: 10,
+    color: '#000000',
+    fontWeight: 'bold',
+    lineHeight: 14,
+    textAlign: 'center',
+  },
 });
 
-export default LabelPreview;
+export default React.memo(LabelPreview);

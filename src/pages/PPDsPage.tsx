@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useCallback, useRef, Fragment} from 'react';
+import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -7,16 +7,17 @@ import {
   TouchableOpacity,
   TextInput,
   StyleSheet,
-  Alert,
   RefreshControl,
   ActivityIndicator,
   Platform,
   StatusBar,
+  Modal,
 } from 'react-native';
 
-import Modal from 'react-native-modal';
 import {useAuth} from '../contexts/AuthContext';
 import {usePrinter} from '../PrinterContext';
+import OfflineIndicator from '../components/OfflineIndicator';
+import offlineManager from '../utils/offlineManager';
 import {
   apiService,
   Ingredient,
@@ -35,8 +36,15 @@ import {
   generateTSCLabelContent,
   LabelType,
 } from '../utils/labelManagement';
-import LabelPreview from '../components/LabelPreview';
+
+import {showToast} from '../utils/toastUtils';
+// Removed LabelPreview: no longer showing on-screen preview
+
 import LabelSettingsDisplay from '../components/LabelSettingsDisplay';
+
+import CalendarModal from '../components/CalendarModal';
+import LoadingSpinner from '../components/LoadingSpinner';
+import QueueModal from '../components/QueueModal';
 import {
   Search,
   SearchX,
@@ -50,6 +58,7 @@ import {
   Eye,
   AlertTriangle,
   CheckCircle,
+  Calendar,
 } from 'lucide-react-native';
 
 // Types for the labels system
@@ -64,12 +73,23 @@ const renderAllergenIcon = (allergen: string, size: number = 12) => {
     console.warn('Invalid allergen passed to renderAllergenIcon:', allergen);
     return <AlertTriangle size={size} color="#856404" />;
   }
+
+  // Return the allergen icon for valid allergens
+  return <AlertTriangle size={size} color="#856404" />;
 };
 
 const PPDSPage: React.FC = () => {
   const {isAuthenticated, user} = useAuth();
-  const {connectedDevice, isPrinting, printPPDSLabel, setIsPrinting} =
-    usePrinter();
+  const {
+    connectedDevice,
+    isPrinting,
+    setIsPrinting,
+    addToPrintQueue,
+    printQueue: spoolerQueue,
+    queueStatus,
+    clearPrintQueue: clearSpoolerQueue,
+    printTSPLLabels,
+  } = usePrinter();
 
   // Core data state
   const [printQueue, setPrintQueue] = useState<PrintQueueItem[]>([]);
@@ -81,6 +101,9 @@ const PPDSPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('menu');
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingPrint, setIsLoadingPrint] = useState(false);
+  const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+  const [isSavingQueue, setIsSavingQueue] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Print settings
@@ -99,65 +122,123 @@ const PPDSPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  // Prompt state
-  const [promptVisible, setPromptVisible] = useState(false);
-  const [promptTitle, setPromptTitle] = useState('');
-  const [promptMessage, setPromptMessage] = useState('');
-  const [promptValue, setPromptValue] = useState('');
-  const [promptCallback, setPromptCallback] = useState<
-    ((value: string) => void) | null
-  >(null);
+  // Calendar modal state
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const [calendarInitial, setCalendarInitial] = useState<string>('');
+  const [calendarTargetUid, setCalendarTargetUid] = useState<string>('');
+
+  // Queue modal state
+  const [queueModalVisible, setQueueModalVisible] = useState(false);
 
   // Company name from user context
   const companyName = user?.company_name || 'Your Company';
 
-  // Prompt functions
-  const showPrompt = (
-    title: string,
-    message = '',
-    initial = '',
-  ): Promise<string | undefined> => {
-    return new Promise(resolve => {
-      setPromptTitle(title);
-      setPromptMessage(message);
-      setPromptValue(initial);
-      setPromptCallback(() => resolve);
-      setPromptVisible(true);
-    });
-  };
-
-  const handlePromptCancel = () => {
-    setPromptVisible(false);
-    if (promptCallback) {
-      promptCallback('');
-    }
-  };
-
-  const handlePromptSubmit = () => {
-    setPromptVisible(false);
-    if (promptCallback) {
-      promptCallback(promptValue);
-    }
-  };
-
-  // Data fetching
+  // Date selection uses CalendarModal
   const fetchData = useCallback(async () => {
     try {
       setIsLoading(true);
-      const [ingredientsData, menuItemsData, allergensData] = await Promise.all(
-        [
-          apiService.getIngredients(),
-          apiService.getMenuItems(),
-          apiService.getAllergens(),
-        ],
-      );
+      let ingredientsData: any[], menuItemsData: any[];
 
-      setIngredients(ingredientsData);
-      setMenuItems(menuItemsData);
-      setAllergens(allergensData);
+      // Always try to load from cache first for better offline experience
+      console.log('🔄 PPDS: Attempting to load cached data first...');
+
+      const [cachedIngredients, cachedMenuItems] = await Promise.all([
+        offlineManager.getCachedIngredients(),
+        offlineManager.getCachedMenuItems(),
+      ]);
+
+      if (
+        cachedIngredients &&
+        cachedMenuItems &&
+        cachedIngredients.length > 0 &&
+        cachedMenuItems.length > 0
+      ) {
+        console.log('✅ PPDS: Loaded cached data:', {
+          ingredients: cachedIngredients.length,
+          menuItems: cachedMenuItems.length,
+        });
+
+        ingredientsData = cachedIngredients;
+        menuItemsData = cachedMenuItems;
+
+        // Set the data immediately from cache
+        const validIngredients = Array.isArray(ingredientsData)
+          ? ingredientsData.filter(
+              item => item && typeof item === 'object' && item.ingredientName,
+            )
+          : [];
+        const validMenuItems = Array.isArray(menuItemsData)
+          ? menuItemsData.filter(
+              item => item && typeof item === 'object' && item.menuItemName,
+            )
+          : [];
+
+        setIngredients(validIngredients);
+        setMenuItems(validMenuItems);
+
+        console.log('✅ PPDS: Data loaded from cache successfully');
+      }
+
+      // Check if we're online and try to refresh from API
+      const isOnline = offlineManager.isOnline();
+      if (isOnline) {
+        console.log('🌐 PPDS: Online mode - refreshing from API...');
+
+        try {
+          // Load from API
+          [ingredientsData, menuItemsData] = await Promise.all([
+            apiService.getIngredients(),
+            apiService.getMenuItems(),
+          ]);
+
+          // Cache the data for offline use
+          if (ingredientsData && menuItemsData) {
+            await Promise.all([
+              offlineManager.cacheIngredients(ingredientsData),
+              offlineManager.cacheMenuItems(menuItemsData),
+            ]);
+          }
+
+          // Update state with fresh data
+          const validIngredients = Array.isArray(ingredientsData)
+            ? ingredientsData.filter(
+                item => item && typeof item === 'object' && item.ingredientName,
+              )
+            : [];
+          const validMenuItems = Array.isArray(menuItemsData)
+            ? menuItemsData.filter(
+                item => item && typeof item === 'object' && item.menuItemName,
+              )
+            : [];
+
+          setIngredients(validIngredients);
+          setMenuItems(validMenuItems);
+
+          console.log('✅ PPDS: Data refreshed from API successfully');
+        } catch (error) {
+          console.warn(
+            '⚠️ PPDS: API refresh failed, keeping cached data:',
+            error,
+          );
+          // Don't show error toast if we have cached data
+          if (!cachedIngredients || !cachedMenuItems) {
+            showToast.error('Error', 'Failed to fetch data. Please try again.');
+          }
+        }
+      } else {
+        console.log('📱 PPDS: Offline mode - using cached data only');
+        if (!cachedIngredients || !cachedMenuItems) {
+          showToast.error(
+            'Offline',
+            'No cached data available. Please connect to internet first.',
+          );
+          setIsLoading(false);
+          return;
+        }
+      }
     } catch (error) {
-      console.error('Error fetching data:', error);
-      Alert.alert('Error', 'Failed to fetch data. Please try again.');
+      console.error('Error fetching PPDS data:', error);
+      showToast.error('Error', 'Failed to fetch data. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -166,131 +247,194 @@ const PPDSPage: React.FC = () => {
   const fetchLabelSettings = useCallback(async () => {
     try {
       setIsLoadingLabelSettings(true);
-      const settings = await apiService.getLabelSettings();
-      const settingsMap: Record<string, number> = {};
-      settings.settings.forEach(setting => {
-        settingsMap[setting.label_type] = setting.expiry_days;
-      });
-      setLabelSettings(settingsMap);
+      let settingsMap: Record<string, number> = {};
+
+      // Try to load from cache first
+      const cachedSettings = await offlineManager.getCachedLabelSettings();
+      if (cachedSettings && Object.keys(cachedSettings).length > 0) {
+        console.log(
+          '✅ PPDS: Loaded label settings from cache:',
+          cachedSettings,
+        );
+        settingsMap = cachedSettings;
+        setLabelSettings(settingsMap);
+      }
+
+      // Check if we're online and try to refresh from API
+      const isOnline = offlineManager.isOnline();
+      if (isOnline) {
+        console.log('🔍 PPDS: Loading label settings from API...');
+        try {
+          const settings = await apiService.getLabelSettings();
+          if (settings && Array.isArray(settings.settings)) {
+            settings.settings.forEach((s: any) => {
+              if (s.label_type && typeof s.expiry_days === 'number') {
+                settingsMap[s.label_type] = s.expiry_days;
+              }
+            });
+          }
+          setLabelSettings(settingsMap);
+
+          // Cache the settings for offline use
+          await offlineManager.cacheLabelSettings(settingsMap);
+          console.log('✅ PPDS: Label settings loaded from API and cached');
+        } catch (error) {
+          console.warn(
+            '⚠️ PPDS: API label settings fetch failed, keeping cached data:',
+            error,
+          );
+          if (!cachedSettings) {
+            setLabelSettings({});
+          }
+        }
+      } else {
+        console.log('📱 PPDS: Offline mode - using cached label settings');
+        if (!cachedSettings) {
+          setLabelSettings({});
+        }
+      }
     } catch (error) {
-      console.error('Error fetching label settings:', error);
+      console.warn('PPDS label settings fetch failed:', error);
+      setLabelSettings({});
     } finally {
       setIsLoadingLabelSettings(false);
     }
   }, []);
 
-  const onRefresh = useCallback(async () => {
-    setIsRefreshing(true);
-    await fetchData();
-    setIsRefreshing(false);
-  }, [fetchData]);
+  // Load cached print queue on app start
+  const loadCachedPrintQueue = useCallback(async () => {
+    try {
+      setIsLoadingQueue(true);
+      console.log('🔄 PPDS: Loading cached print queue...');
+      const cachedQueue = await offlineManager.getPrintQueue('ppds');
+      console.log('🔄 PPDS: Retrieved cached queue:', cachedQueue);
+
+      if (cachedQueue) {
+        setPrintQueue(cachedQueue);
+        console.log(
+          '✅ PPDS: Loaded cached print queue:',
+          cachedQueue.length,
+          'items',
+        );
+      } else {
+        console.log(
+          'ℹ️ PPDS: No cached queue found, starting with empty queue',
+        );
+        setPrintQueue([]);
+      }
+
+      // Mark that we've loaded the cache, so future changes will be saved
+      hasLoadedCache.current = true;
+    } catch (error) {
+      console.error('❌ PPDS: Error loading cached print queue:', error);
+      setPrintQueue([]);
+      hasLoadedCache.current = true;
+    } finally {
+      setIsLoadingQueue(false);
+    }
+  }, []);
+
+  // Save print queue to cache whenever it changes
+  const hasLoadedCache = useRef(false);
+
+  useEffect(() => {
+    if (hasLoadedCache.current) {
+      setIsSavingQueue(true);
+      console.log(
+        '💾 PPDS: Saving print queue to cache:',
+        printQueue.length,
+        'items',
+      );
+      // Always persist, including empty arrays so clears are respected
+      offlineManager.savePrintQueue(printQueue, 'ppds').finally(() => {
+        setIsSavingQueue(false);
+      });
+    }
+  }, [printQueue]);
 
   useEffect(() => {
     if (isAuthenticated) {
       fetchData();
       fetchLabelSettings();
+      loadCachedPrintQueue();
     }
-  }, [isAuthenticated, fetchData, fetchLabelSettings]);
+  }, [isAuthenticated, fetchData, fetchLabelSettings, loadCachedPrintQueue]);
 
-  // Print queue management
-  const addToPrintQueue = (item: MenuItem, type: TabType) => {
-    const existingItem = printQueue.find(
-      qItem => qItem.uid === item.menuItemID,
+  const convertToYYYYMMDD = (dateString: string): string => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return dateString;
+    const parts = dateString.split('.');
+    if (parts.length === 3) {
+      const [day, month, year] = parts;
+      return `${year}-${month}-${day}`;
+    }
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const convertToDDMMYYYY = (dateString: string): string => {
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateString)) return dateString;
+    const parts = dateString.split('-');
+    if (parts.length === 3) {
+      const [year, month, day] = parts;
+      return `${day}.${month}.${year}`;
+    }
+    const today = new Date();
+    const d = String(today.getDate()).padStart(2, '0');
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const y = today.getFullYear();
+    return `${d}.${m}.${y}`;
+  };
+
+  const openDatePicker = (uid: string, currentDate: string) => {
+    const yyyyMMdd = convertToYYYYMMDD(currentDate);
+    setCalendarTargetUid(uid);
+    setCalendarInitial(yyyyMMdd);
+    setCalendarVisible(true);
+  };
+
+  const updateCustomExpiry = (uid: string, expiry: string) => {
+    setCustomExpiry(prev => ({...prev, [uid]: expiry}));
+  };
+
+  // Queue management functions for modal
+  const handleUpdateQuantity = (uid: string, quantity: number) => {
+    setPrintQueue(prev =>
+      prev.map(item => (item.uid === uid ? {...item, quantity} : item)),
     );
+  };
 
-    if (existingItem) {
-      // Update quantity if already in queue
-      setPrintQueue(prev =>
-        prev.map(qItem =>
-          qItem.uid === item.menuItemID
-            ? {...qItem, quantity: qItem.quantity + 1}
-            : qItem,
-        ),
-      );
-    } else {
-      // Add new item to queue
-      const defaultLabelType: LabelType = 'ppds';
-
-      // Safe fallback for expiry days
-      let expiryDays = 5; // Default PPDS expiry
-      try {
-        if (labelSettings[defaultLabelType]) {
-          expiryDays = labelSettings[defaultLabelType];
-        } else {
-          expiryDays = getDefaultExpiryDays(defaultLabelType);
-        }
-      } catch (error) {
-        console.warn('Error getting expiry days, using default:', error);
-        expiryDays = 5; // Fallback to 5 days for PPDS
-      }
-
-      const expiryDate = calculateExpiryDate(
-        defaultLabelType,
-        undefined,
-        expiryDays,
-      );
-
-      // Extract allergens from ingredients - PPDS page specific method
-      const allAllergens: string[] = [];
-      if (item.ingredients) {
-        console.log('🔍 PPDS - Menu item ingredients:', item.ingredients);
-        console.log(
-          '🔍 PPDS - Available ingredients:',
-          ingredients.map(i => ({id: i.ingredientID, name: i.ingredientName})),
-        );
-
-        item.ingredients.forEach(ingredientRef => {
-          console.log(
-            '🔍 PPDS - Looking for ingredient with uuid:',
-            ingredientRef.uuid,
-          );
-          const fullIngredient = ingredients.find(
-            i => i.ingredientID === ingredientRef.uuid,
-          );
-          console.log('🔍 PPDS - Found ingredient:', fullIngredient);
-
-          if (fullIngredient && fullIngredient.allergens) {
-            console.log(
-              '🔍 PPDS - Ingredient allergens:',
-              fullIngredient.allergens,
-            );
-            fullIngredient.allergens.forEach(allergen => {
-              allAllergens.push(allergen.allergenName);
-            });
-          }
-        });
-      }
-
-      console.log('🔍 PPDS - Final allergens array:', allAllergens);
-
-      const newQueueItem: PrintQueueItem = {
-        uid: item.menuItemID,
-        name: item.menuItemName,
-        type: 'menu',
-        quantity: 1,
-        labelType: defaultLabelType,
-        expiryDate,
-        allergens: [...new Set(allAllergens)], // Remove duplicates
-        ingredients: item.ingredients?.map(i => i.ingredientName) || [],
-        labelHeight: '80mm', // PPDS labels are 80mm height
-      };
-
-      setPrintQueue(prev => [...prev, newQueueItem]);
-    }
+  const addItemToPrintQueue = (item: MenuItem, _type: TabType) => {
+    const defaultLabelType: LabelType = 'ppds';
+    let expiryDays = 5;
+    try {
+      expiryDays = labelSettings[defaultLabelType]
+        ? labelSettings[defaultLabelType]
+        : getDefaultExpiryDays(defaultLabelType);
+    } catch {}
+    const expiryDate = calculateExpiryDate(
+      defaultLabelType,
+      undefined,
+      expiryDays,
+    );
+    const newQueueItem: PrintQueueItem = {
+      uid: item.menuItemID,
+      name: item.menuItemName,
+      type: 'menu',
+      quantity: 1,
+      labelType: defaultLabelType,
+      expiryDate,
+      allergens: [],
+      ingredients: item.ingredients?.map(i => i.ingredientName) || [],
+      labelHeight: '80mm',
+    };
+    setPrintQueue(prev => [...prev, newQueueItem]);
   };
 
   const removeFromQueue = (uid: string) => {
     setPrintQueue(prev => prev.filter(item => item.uid !== uid));
-  };
-
-  const updateQuantity = (uid: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeFromQueue(uid);
-      return;
-    }
-    setPrintQueue(prev =>
-      prev.map(item => (item.uid === uid ? {...item, quantity} : item)),
-    );
   };
 
   const incrementQuantity = (uid: string) => {
@@ -302,67 +446,42 @@ const PPDSPage: React.FC = () => {
   };
 
   const decrementQuantity = (uid: string) => {
-    setPrintQueue(prev =>
-      prev.map(item =>
-        item.uid === uid
-          ? {...item, quantity: Math.max(1, item.quantity - 1)}
-          : item,
-      ),
-    );
-  };
-
-  const updateLabelType = (uid: string, labelType: LabelType) => {
-    setPrintQueue(prev =>
-      prev.map(item => (item.uid === uid ? {...item, labelType} : item)),
-    );
-  };
-
-  const updateCustomExpiry = (uid: string, expiry: string) => {
-    setCustomExpiry(prev => ({...prev, [uid]: expiry}));
-  };
-
-  const openDatePicker = async (uid: string, currentDate: string) => {
-    try {
-      const newDate = await showPrompt(
-        'Set Custom Expiry Date',
-        'Enter expiry date (YYYY-MM-DD):',
-        currentDate,
+    setPrintQueue(prev => {
+      const found = prev.find(item => item.uid === uid);
+      if (!found) return prev;
+      if (found.quantity <= 1) return prev.filter(item => item.uid !== uid);
+      return prev.map(item =>
+        item.uid === uid ? {...item, quantity: item.quantity - 1} : item,
       );
-      if (newDate) {
-        updateCustomExpiry(uid, newDate);
-      }
-    } catch (error) {
-      console.error('Error setting custom expiry:', error);
-    }
+    });
   };
+
+  const onRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await fetchData();
+    setIsRefreshing(false);
+  }, [fetchData]);
 
   const clearPrintQueue = () => {
-    Alert.alert(
-      'Clear Queue',
-      'Are you sure you want to clear the entire print queue?',
-      [
-        {text: 'Cancel', style: 'cancel'},
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: () => {
-            setPrintQueue([]);
-            setCustomExpiry({});
-          },
-        },
-      ],
-    );
+    // For now, we'll just clear the queue directly since toast doesn't support confirmations
+    // In a real app, you might want to use a custom modal for confirmations
+    setPrintQueue([]);
+    setCustomExpiry({});
+    showToast.success('Queue Cleared', 'Print queue has been cleared');
   };
 
   // Printing functionality
   const printLabels = async () => {
     if (!printQueue || printQueue.length === 0) {
-      Alert.alert('Empty Queue', 'Please add items to the print queue first');
+      showToast.error(
+        'Empty Queue',
+        'Please add items to the print queue first',
+      );
       return;
     }
 
     if (!connectedDevice) {
-      Alert.alert(
+      showToast.error(
         'No Printer Connected',
         'Please connect a printer first from the Connection page.',
       );
@@ -370,92 +489,43 @@ const PPDSPage: React.FC = () => {
     }
 
     try {
-      setIsPrinting(true);
+      setIsLoadingPrint(true);
 
-      // Print each item in the queue
-      for (const item of printQueue) {
-        const quantity = item.quantity;
+      console.log('🔍 PPDS Print - Data being sent:', {
+        printQueueLength: printQueue.length,
+        storageInstructions,
+        companyName,
+        customExpiry,
+        sampleItem: printQueue[0],
+      });
 
-        // For PPDS page, we only handle menu items
-        if (item.type === 'menu') {
-          const defaultLabelType = 'ppds'; // Always PPDS for this page
-          const expiryDays =
-            labelSettings[defaultLabelType] ||
-            getDefaultExpiryDays(defaultLabelType);
-          const expiryDate = customExpiry[item.uid] || item.expiryDate;
+      // Use TSPL direct printing instead of image capture
+      await printTSPLLabels(
+        printQueue,
+        ingredients,
+        menuItems,
+        customExpiry,
+        '', // No initials for PPDS
+        storageInstructions, // Pass storage instructions
+        companyName, // Pass company name for "Prepared by" line
+      );
 
-          // Get the full ingredient objects from the stored ingredients array
-          const ingredientObjects = item.ingredients
-            .map(ingredientName => {
-              return ingredients.find(i => i.ingredientName === ingredientName);
-            })
-            .filter((ing): ing is Ingredient => ing !== undefined);
-
-          // Extract ingredient names and allergens for PPDS format
-          const ingredientNames = ingredientObjects.map(
-            ing => ing.ingredientName,
-          );
-          const allAllergens: string[] = [];
-          ingredientObjects.forEach(ingredient => {
-            if (ingredient.allergens) {
-              ingredient.allergens.forEach(allergen => {
-                allAllergens.push(allergen.allergenName);
-              });
-            }
-          });
-
-          // Create PPDS label data
-          const ppdsLabelData = {
-            productName: item.name,
-            ingredients: ingredientNames,
-            allergens: [...new Set(allAllergens)], // Remove duplicates
-            expiryDate: expiryDate,
-            storageInstructions: storageInstructions,
-            companyName: companyName,
-          };
-
-          // Print the specified quantity for this item
-          for (let i = 0; i < quantity; i++) {
-            await printPPDSLabel(ppdsLabelData);
-
-            // Log the print action
-            try {
-              await apiService.logPrintAction({
-                labelType: item.labelType,
-                itemId: item.uid,
-                itemName: item.name,
-                quantity: 1, // Log each individual print
-                expiryDate: customExpiry[item.uid] || item.expiryDate,
-                initial: undefined, // No initials for PPDS
-                labelHeight: item.labelHeight,
-                printerUsed: connectedDevice?.name || 'Unknown Printer',
-                sessionId: `print_${Date.now()}`, // Generate unique session ID
-              });
-            } catch (logError) {
-              console.warn('Failed to log print action:', logError);
-              // Continue printing even if logging fails
-            }
-
-            // Small delay between prints to prevent buffer overflow
-            if (i < quantity - 1) {
-              await new Promise(resolve => setTimeout(resolve, 500));
-            }
-          }
-        }
-      }
-
-      Alert.alert(
-        'Success',
-        `${printQueue.length} label types printed successfully!`,
+      showToast.success(
+        'Print Jobs Queued',
+        `${printQueue.length} PPDS labels have been sent to the printer using TSPL protocol.`,
       );
       setPrintQueue([]);
       setCustomExpiry({});
-      setStorageInstructions('Keep refrigerated at 5°C');
     } catch (error) {
-      console.error('Printing error:', error);
-      Alert.alert('Error', 'Failed to print labels. Please try again.');
+      console.error('Print error:', error);
+      showToast.error(
+        'Print Failed',
+        error instanceof Error
+          ? error.message
+          : 'An error occurred while printing',
+      );
     } finally {
-      setIsPrinting(false);
+      setIsLoadingPrint(false);
     }
   };
 
@@ -484,6 +554,48 @@ const PPDSPage: React.FC = () => {
     const endIndex = startIndex + itemsPerPage;
     const currentItems = filteredItems.slice(startIndex, endIndex);
 
+    const getDefaultExpiryForRow = (item: MenuItem): string => {
+      const defaultLabelType: LabelType = 'ppds';
+      let expiryDays = 5;
+      try {
+        if (labelSettings[defaultLabelType]) {
+          expiryDays = labelSettings[defaultLabelType];
+        } else {
+          expiryDays = getDefaultExpiryDays(defaultLabelType);
+        }
+      } catch {}
+      return calculateExpiryDate(defaultLabelType, undefined, expiryDays);
+    };
+
+    const handleIncrement = (item: MenuItem) => {
+      const q = printQueue.find(qItem => qItem.uid === item.menuItemID);
+      if (q) {
+        incrementQuantity(q.uid);
+      } else {
+        addItemToPrintQueue(item, 'menu');
+      }
+    };
+
+    const handleDecrement = (item: MenuItem) => {
+      const q = printQueue.find(qItem => qItem.uid === item.menuItemID);
+      if (q) {
+        decrementQuantity(q.uid);
+      }
+    };
+
+    const handleOpenDatePickerRow = (item: MenuItem, current: string) => {
+      const q = printQueue.find(qItem => qItem.uid === item.menuItemID);
+      if (q) {
+        openDatePicker(q.uid, current);
+      } else {
+        addItemToPrintQueue(item, 'menu');
+        setTimeout(() => {
+          const created = printQueue.find(x => x.uid === item.menuItemID);
+          if (created) openDatePicker(created.uid, current);
+        }, 0);
+      }
+    };
+
     if (isLoading) {
       return (
         <View style={styles.loadingContainer}>
@@ -507,7 +619,11 @@ const PPDSPage: React.FC = () => {
               placeholderTextColor="#999"
             />
             {searchTerm ? (
-              <TouchableOpacity onPress={() => setSearchTerm('')}>
+              <TouchableOpacity
+                hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                onPress={() => setSearchTerm('')}>
                 <SearchX size={20} color="#666" />
               </TouchableOpacity>
             ) : null}
@@ -529,52 +645,63 @@ const PPDSPage: React.FC = () => {
           ) : (
             <>
               {currentItems.map(item => {
-                const isInQueue = printQueue.some(
+                const q = printQueue.find(
                   qItem => qItem.uid === item.menuItemID,
                 );
-                const queueItem = printQueue.find(
-                  qItem => qItem.uid === item.menuItemID,
-                );
+                const currentQty = q?.quantity ?? 0;
+                const currentExpiry = q
+                  ? customExpiry[q.uid] || q.expiryDate
+                  : getDefaultExpiryForRow(item);
 
                 return (
-                  <TouchableOpacity
-                    key={item.menuItemID}
-                    style={styles.itemCard}
-                    onPress={() => !isInQueue && addToPrintQueue(item, 'menu')}>
-                    <View style={styles.itemMainInfo}>
-                      <Text style={styles.itemName}>{item.menuItemName}</Text>
-                    </View>
+                  <View key={item.menuItemID} style={styles.itemCard}>
+                    <View style={styles.itemTopRow}>
+                      <View style={styles.itemMainInfo}>
+                        <Text style={styles.itemName}>{item.menuItemName}</Text>
+                        <TouchableOpacity
+                          style={[styles.expiryRow, styles.expiryRowPressable]}
+                          hitSlop={{top: 16, bottom: 16, left: 16, right: 16}}
+                          pressRetentionOffset={{
+                            top: 20,
+                            bottom: 20,
+                            left: 20,
+                            right: 20,
+                          }}
+                          delayPressIn={0}
+                          activeOpacity={0.7}
+                          accessibilityRole="button"
+                          accessibilityLabel="Set custom expiry date"
+                          onPress={() =>
+                            handleOpenDatePickerRow(item, currentExpiry)
+                          }>
+                          <Text style={styles.queueItemExpiry}>
+                            Use By: {currentExpiry}
+                          </Text>
+                          <Calendar size={16} color="#8A2BE2" />
+                        </TouchableOpacity>
+                      </View>
 
-                    <View style={styles.itemActions}>
-                      <TouchableOpacity
-                        style={[
-                          styles.addButton,
-                          isInQueue && styles.addButtonDisabled,
-                        ]}
-                        onPress={() =>
-                          !isInQueue && addToPrintQueue(item, 'menu')
-                        }
-                        disabled={isInQueue}>
-                        {isInQueue ? (
-                          <>
-                            <CheckCircle size={16} color="#4CAF50" />
-                            <Text
-                              style={[
-                                styles.addButtonText,
-                                styles.addButtonTextDisabled,
-                              ]}>
-                              {queueItem?.quantity || 1} in Queue
-                            </Text>
-                          </>
-                        ) : (
-                          <>
-                            <Plus size={16} color="#fff" />
-                            <Text style={styles.addButtonText}>Add</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
+                      <View style={styles.itemActions}>
+                        <TouchableOpacity
+                          style={styles.quantityButton}
+                          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                          accessibilityRole="button"
+                          accessibilityLabel="Decrease quantity"
+                          onPress={() => handleDecrement(item)}>
+                          <Minus size={16} color="#666" />
+                        </TouchableOpacity>
+                        <Text style={styles.quantityDisplay}>{currentQty}</Text>
+                        <TouchableOpacity
+                          style={styles.quantityButton}
+                          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                          accessibilityRole="button"
+                          accessibilityLabel="Increase quantity"
+                          onPress={() => handleIncrement(item)}>
+                          <Plus size={16} color="#666" />
+                        </TouchableOpacity>
+                      </View>
                     </View>
-                  </TouchableOpacity>
+                  </View>
                 );
               })}
 
@@ -662,11 +789,22 @@ const PPDSPage: React.FC = () => {
             <TouchableOpacity
               style={styles.printButton}
               onPress={printLabels}
-              disabled={!printQueue || printQueue.length === 0 || isPrinting}>
-              <Printer size={16} color="#fff" />
-              <Text style={styles.printButtonText}>
-                {isPrinting ? 'Printing...' : 'Print All'}
-              </Text>
+              disabled={
+                !printQueue || printQueue.length === 0 || isLoadingPrint
+              }>
+              {isLoadingPrint ? (
+                <LoadingSpinner
+                  variant="button"
+                  message="Printing..."
+                  size="small"
+                  color="#fff"
+                />
+              ) : (
+                <>
+                  <Printer size={16} color="#fff" />
+                  <Text style={styles.printButtonText}>Print All</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         )}
@@ -690,6 +828,24 @@ const PPDSPage: React.FC = () => {
                   {item.labelType.toUpperCase()} • {item.labelHeight}
                 </Text>
 
+                {/* Expiry Date Row */}
+                <View style={styles.expiryRow}>
+                  <Text style={styles.queueItemExpiry}>
+                    Use By: {customExpiry[item.uid] || item.expiryDate}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.calendarButton}
+                    hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                    onPress={() =>
+                      openDatePicker(
+                        item.uid,
+                        customExpiry[item.uid] || item.expiryDate,
+                      )
+                    }>
+                    <Calendar size={16} color="#8A2BE2" />
+                  </TouchableOpacity>
+                </View>
+
                 {/* Allergens in queue */}
                 {item.allergens && item.allergens.length > 0 && (
                   <View style={styles.queueAllergens}>
@@ -711,6 +867,7 @@ const PPDSPage: React.FC = () => {
                 <View style={styles.quantityControls}>
                   <TouchableOpacity
                     style={styles.quantityButton}
+                    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
                     onPress={() => decrementQuantity(item.uid)}>
                     <Minus size={16} color="#666" />
                   </TouchableOpacity>
@@ -719,6 +876,7 @@ const PPDSPage: React.FC = () => {
 
                   <TouchableOpacity
                     style={styles.quantityButton}
+                    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
                     onPress={() => incrementQuantity(item.uid)}>
                     <Plus size={16} color="#666" />
                   </TouchableOpacity>
@@ -726,6 +884,7 @@ const PPDSPage: React.FC = () => {
 
                 <TouchableOpacity
                   style={styles.removeButton}
+                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
                   onPress={() => removeFromQueue(item.uid)}>
                   <X size={16} color="#fff" />
                 </TouchableOpacity>
@@ -737,107 +896,7 @@ const PPDSPage: React.FC = () => {
     </View>
   );
 
-  // Enhanced PPDS label preview
-  const renderLabelPreview = () => {
-    if (printQueue.length === 0) {
-      return (
-        <View style={styles.previewPlaceholder}>
-          <Eye size={48} color="#ccc" />
-          <Text style={styles.previewText}>
-            Select items to preview PPDS labels
-          </Text>
-        </View>
-      );
-    }
-
-    // Debug: Log allergens data
-    console.log(
-      'PPDS Preview - Print Queue Items:',
-      printQueue.map(item => ({
-        name: item.name,
-        allergens: item.allergens,
-        ingredients: item.ingredients,
-      })),
-    );
-
-    return (
-      <View style={styles.previewScroll}>
-        {printQueue.map(item => (
-          <View key={item.uid} style={styles.previewContainer}>
-            {/* Custom PPDS Label Preview */}
-            <View style={styles.ppdsPreviewContainer}>
-              {/* Product Name */}
-              <Text style={styles.ppdsPreviewProductName}>{item.name}</Text>
-
-              {/* Ingredients directly below name */}
-              {item.ingredients && item.ingredients.length > 0 && (
-                <View style={styles.ppdsPreviewIngredients}>
-                  <Text style={styles.ppdsPreviewIngredientsLine}>
-                    <Text style={styles.ppdsPreviewSectionTitle}>
-                      Ingredients:{' '}
-                    </Text>
-                    <Text style={styles.ppdsPreviewIngredientsText}>
-                      {item.ingredients
-                        .map(ingredient => {
-                          const allergen = item.allergens?.find(allergen =>
-                            ingredient
-                              .toLowerCase()
-                              .includes(allergen.toLowerCase()),
-                          );
-                          if (allergen) {
-                            return `${ingredient}(${allergen.toUpperCase()})`;
-                          }
-                          return ingredient;
-                        })
-                        .join(', ')}
-                    </Text>
-                  </Text>
-                </View>
-              )}
-
-              {/* Allergen Warning Box - only show if allergens exist */}
-              {item.allergens && item.allergens.length > 0 && (
-                <View style={styles.ppdsPreviewAllergenBox}>
-                  <Text style={styles.ppdsPreviewAllergenText}>
-                    Contains:{' '}
-                    {item.allergens.map(a => a.toUpperCase()).join(', ')}
-                  </Text>
-                </View>
-              )}
-
-              {/* Dates directly below ingredients/allergens */}
-              <View style={styles.ppdsPreviewDates}>
-                <Text style={styles.ppdsPreviewDateText}>
-                  Packed: {new Date().toISOString().split('T')[0]}
-                </Text>
-                <Text style={styles.ppdsPreviewDateText}>
-                  Use By: {customExpiry[item.uid] || item.expiryDate || 'N/A'}
-                </Text>
-              </View>
-
-              {/* Bottom section - Storage and Company info */}
-              <View style={styles.ppdsPreviewBottomSection}>
-                {/* Storage Instructions */}
-                <Text style={styles.ppdsPreviewStorageText}>
-                  {storageInstructions}
-                </Text>
-
-                {/* Company Info */}
-                <View style={styles.ppdsPreviewCompany}>
-                  <Text style={styles.ppdsPreviewCompanyText}>
-                    Prepared by: {companyName}
-                  </Text>
-                  <Text style={styles.ppdsPreviewWebsiteText}>
-                    www.instalabel.co
-                  </Text>
-                </View>
-              </View>
-            </View>
-          </View>
-        ))}
-      </View>
-    );
-  };
+  // Removed PPDS label preview renderer
 
   if (!isAuthenticated) {
     return (
@@ -856,53 +915,84 @@ const PPDSPage: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#8A2BE2" />
-      {/* Prompt Modal */}
-      <Modal
-        visible={promptVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={handlePromptCancel}>
-        <View style={styles.promptOverlay}>
-          <View style={styles.promptContainer}>
-            <Text style={styles.promptTitle}>{promptTitle}</Text>
-            {promptMessage ? (
-              <Text style={styles.promptMessage}>{promptMessage}</Text>
-            ) : null}
-            <TextInput
-              value={promptValue}
-              onChangeText={setPromptValue}
-              style={styles.promptInput}
-              placeholder="YYYY-MM-DD"
-            />
-            <View style={styles.promptButtons}>
-              <TouchableOpacity
-                onPress={handlePromptCancel}
-                style={[styles.promptButton, styles.promptCancel]}>
-                <Text style={styles.promptButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handlePromptSubmit}
-                style={[styles.promptButton, styles.promptSubmit]}>
-                <Text style={[styles.promptButtonText, {color: 'white'}]}>
-                  Set
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {/* Calendar Modal */}
+      <CalendarModal
+        visible={calendarVisible}
+        initialDate={calendarInitial}
+        onClose={() => setCalendarVisible(false)}
+        onSelect={selectedYmd => {
+          const ddMMyyyy = convertToDDMMYYYY(selectedYmd);
+          if (calendarTargetUid) {
+            updateCustomExpiry(calendarTargetUid, ddMMyyyy);
+          }
+          setCalendarVisible(false);
+        }}
+        onClear={() => {
+          if (calendarTargetUid) {
+            setCustomExpiry(prev => {
+              const copy = {...prev};
+              delete copy[calendarTargetUid];
+              return copy;
+            });
+          }
+          setCalendarVisible(false);
+        }}
+        title="Set Custom Expiry Date"
+      />
+
+      {/* Queue Modal */}
+      <QueueModal
+        visible={queueModalVisible}
+        onClose={() => setQueueModalVisible(false)}
+        queueItems={printQueue}
+        onUpdateQueue={setPrintQueue}
+        onRemoveItem={removeFromQueue}
+        onUpdateQuantity={handleUpdateQuantity}
+        onUpdateExpiry={updateCustomExpiry}
+        customExpiry={customExpiry}
+        onUpdateCustomExpiry={updateCustomExpiry}
+        onOpenDatePicker={(uid, currentDate) => {
+          setQueueModalVisible(false);
+          setTimeout(() => {
+            openDatePicker(uid, currentDate);
+          }, 300);
+        }}
+        showLabelType={false}
+      />
 
       {/* Enhanced PPDS Header */}
       <View style={styles.ppdsHeader}>
         <View style={styles.headerContent}>
-          <View style={styles.headerIconContainer}>
-            <FileText size={32} color="white" />
-          </View>
           <View style={styles.headerTextContainer}>
-            <Text style={styles.ppdsTitle}>PPDS Labels</Text>
-            <Text style={styles.ppdsSubtitle}>
-              Pre-Packaged for Direct Sale - UK Food Compliance
-            </Text>
+            <View style={styles.headerStatsRow}>
+              <View style={styles.headerStatItem}>
+                <Text style={styles.headerStatNumber}>{menuItems.length}</Text>
+                <Text style={styles.headerStatLabel}>Menu Items</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.headerStatItemPressable}
+                onPress={() => setQueueModalVisible(true)}
+                hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                <View style={styles.queueStatContent}>
+                  <Text style={styles.headerStatNumber}>
+                    {printQueue.length}
+                  </Text>
+                  <View style={styles.queueStatRow}>
+                    <Text style={styles.headerStatLabel}>Print Queue</Text>
+                    <Eye size={12} color="rgba(255,255,255,0.8)" />
+                  </View>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.headerStatItem}>
+                <Printer
+                  size={18}
+                  color={connectedDevice ? '#C8FACC' : '#FFD0D0'}
+                />
+                <Text style={styles.headerStatLabel}>
+                  {connectedDevice ? 'Ready' : 'No Printer'}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
       </View>
@@ -916,60 +1006,80 @@ const PPDSPage: React.FC = () => {
         refreshControl={
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
         }>
-        {/* Stats Section */}
-        <View style={styles.statsSection}>
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>{menuItems.length}</Text>
-            <Text style={styles.statLabel}>Menu Items</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>{printQueue.length}</Text>
-            <Text style={styles.statLabel}>In Queue</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Printer
-              size={20}
-              color={connectedDevice ? '#4CAF50' : '#F44336'}
-            />
-            <Text style={styles.statLabel}>
-              {connectedDevice ? 'Ready' : 'No Printer'}
-            </Text>
-          </View>
-        </View>
+        {/* Stats moved to header */}
         {/* Menu Items Tab Content */}
         {renderTabContent()}
 
-        {/* Global Storage Instructions */}
-        <View style={styles.globalStorageContainer}>
-          <Text style={styles.globalStorageLabel}>
-            Storage Instructions (applies to all labels):
-          </Text>
-          <TextInput
-            style={styles.globalStorageInput}
-            placeholder="e.g., Keep refrigerated at 5°C"
-            value={storageInstructions}
-            onChangeText={(text: string) => setStorageInstructions(text)}
-            placeholderTextColor="#999"
-          />
-        </View>
-
-        {/* Print Queue Section */}
-        {renderPrintQueue()}
-
-        {/* Label Preview Section */}
-        <View style={styles.previewSection}>
-          <View style={styles.previewSectionHeader}>
-            <Eye size={24} color="#8A2BE2" />
-            <Text style={styles.sectionTitle}>PPDS Label Preview</Text>
-          </View>
-          <Text style={styles.previewSubtitle}>
-            Preview shows exactly what will be printed on each PPDS label
-          </Text>
-          {renderLabelPreview()}
-        </View>
+        {/* Spacer for footer */}
+        <View style={{height: 140}} />
+        {/* Preview removed */}
       </ScrollView>
+
+      {/* Persistent Footer with Storage Instructions, Clear/Print All, and FAB */}
+      <View style={styles.footerContainer}>
+        <View style={styles.footerStorageContainer}>
+          <View style={styles.footerStorageRow}>
+            <TextInput
+              style={styles.footerStorageInput}
+              placeholder="Storage instructions (e.g., Keep refrigerated at 5°C)"
+              value={storageInstructions}
+              onChangeText={(text: string) => setStorageInstructions(text)}
+              placeholderTextColor="#999"
+              maxLength={36}
+            />
+            <Text style={styles.footerCharacterCount}>
+              {storageInstructions.length}/36
+            </Text>
+          </View>
+        </View>
+        <View style={styles.footerContent}>
+          <TouchableOpacity
+            style={styles.footerClearButton}
+            accessibilityRole="button"
+            accessibilityLabel="Clear print queue"
+            onPress={clearPrintQueue}
+            disabled={!printQueue || printQueue.length === 0}>
+            <Text style={styles.footerClearText}>Clear</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.footerPrintButton}
+            accessibilityRole="button"
+            accessibilityLabel="Print all labels"
+            onPress={printLabels}
+            disabled={!printQueue || printQueue.length === 0 || isLoadingPrint}>
+            <Text style={styles.footerPrintText}>Print all</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Offline Indicator */}
+      <OfflineIndicator />
+
+      {/* Loading Overlays */}
+      {isLoading && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Loading data..."
+          color="#8A2BE2"
+        />
+      )}
+
+      {isLoadingPrint && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Printing labels..."
+          color="#4CAF50"
+        />
+      )}
+
+      {isLoadingQueue && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Loading queue..."
+          color="#8A2BE2"
+        />
+      )}
     </SafeAreaView>
   );
 };
@@ -978,6 +1088,43 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8f9fa',
+  },
+  headerStatsRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerStatItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  headerStatItemPressable: {
+    alignItems: 'center',
+    flex: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  queueStatContent: {
+    alignItems: 'center',
+  },
+  queueStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  headerStatNumber: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: 'white',
+    marginBottom: 2,
+  },
+  headerStatLabel: {
+    fontSize: 12,
+    color: 'white',
+    opacity: 0.9,
   },
   authRequired: {
     flex: 1,
@@ -1003,6 +1150,7 @@ const styles = StyleSheet.create({
   mainContent: {
     paddingHorizontal: 16,
     paddingTop: 20,
+    paddingBottom: 120,
   },
 
   // Enhanced PPDS Header
@@ -1021,28 +1169,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
   },
-  headerIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   headerTextContainer: {
     flex: 1,
-  },
-  ppdsTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: 'white',
-    marginBottom: 4,
-  },
-  ppdsSubtitle: {
-    fontSize: 14,
-    color: 'white',
-    opacity: 0.9,
-    lineHeight: 18,
   },
   // Stats Section
   statsSection: {
@@ -1083,28 +1211,31 @@ const styles = StyleSheet.create({
   // Enhanced Tab Content
   tabContent: {
     width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+    padding: 16,
+    marginBottom: 0,
+    shadowColor: 'transparent',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
 
   // Search Bar
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 12,
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   searchInput: {
     flex: 1,
@@ -1123,29 +1254,36 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+    minHeight: 56,
+  },
+  itemTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
   },
   itemMainInfo: {
     flex: 1,
+    marginRight: 12,
   },
   itemName: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
     color: '#1a1a1a',
-    lineHeight: 24,
+    marginBottom: 4,
   },
 
   itemActions: {
     alignItems: 'center',
+    flexDirection: 'row',
   },
   addButton: {
     flexDirection: 'row',
@@ -1153,8 +1291,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#8A2BE2',
     borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
     gap: 6,
+    minWidth: 80,
+    minHeight: 44,
+    justifyContent: 'center',
   },
   addButtonDisabled: {
     backgroundColor: '#f8f9fa',
@@ -1169,7 +1310,40 @@ const styles = StyleSheet.create({
   addButtonTextDisabled: {
     color: '#4CAF50',
   },
-
+  quantityButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 4,
+    backgroundColor: '#f8f9fa',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quantityDisplay: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    paddingHorizontal: 10,
+  },
+  expiryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+  },
+  expiryRowPressable: {
+    paddingVertical: 6,
+    paddingRight: 6,
+    minHeight: 44,
+  },
+  queueItemExpiry: {
+    fontSize: 14,
+    color: '#6c757d',
+    marginBottom: 8,
+  },
+  // calendarButton removed; entire row is pressable now
   // Enhanced Print Queue
   queueSection: {
     width: '100%',
@@ -1361,37 +1535,14 @@ const styles = StyleSheet.create({
     color: '#333',
     backgroundColor: '#fff',
   },
-  queueItemControls: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  characterCount: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'right',
+    marginTop: 4,
+    fontStyle: 'italic',
   },
-  quantityControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-  },
-  quantityButton: {
-    padding: 8,
-  },
-  quantityDisplay: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    paddingHorizontal: 16,
-    minWidth: 30,
-    textAlign: 'center',
-  },
-  removeButton: {
-    backgroundColor: '#F44336',
-    borderRadius: 8,
-    padding: 8,
-  },
+  // removed legacy queue/quantity styles
 
   // Enhanced Preview Section
   previewSection: {
@@ -1598,75 +1749,89 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
 
-  // Modal Styles
-  promptOverlay: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
+  // Prompt styles removed; using CalendarModal
+  // Persistent Footer
+  footerContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#ffffff',
+    paddingTop: 8,
+    paddingBottom: 16,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e9ecef',
   },
-  promptContainer: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    width: '85%',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 4},
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  promptTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1a1a1a',
+  footerStorageContainer: {
     marginBottom: 12,
-    textAlign: 'center',
   },
-  promptMessage: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 22,
+  footerStorageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  promptInput: {
+  footerStorageInput: {
+    flex: 1,
     borderWidth: 1,
     borderColor: '#e9ecef',
     borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
     color: '#333',
-    width: '100%',
-    marginBottom: 20,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#fff',
   },
-  promptButtons: {
+  footerCharacterCount: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+    minWidth: 35,
+    textAlign: 'right',
+  },
+  footerContent: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    width: '100%',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     gap: 12,
   },
-  promptButton: {
+
+  fabBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    zIndex: 998, // Below FAB actions but above other content
+  },
+  footerClearButton: {
     flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
+    backgroundColor: '#fff5f5',
     borderRadius: 8,
+    paddingVertical: 10,
     alignItems: 'center',
+    marginRight: 4,
+    minHeight: 40,
   },
-  promptCancel: {
-    backgroundColor: '#f8f9fa',
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-  },
-  promptSubmit: {
-    backgroundColor: '#8A2BE2',
-  },
-  promptButtonText: {
+  footerClearText: {
+    color: '#F44336',
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+  },
+  footerPrintButton: {
+    flex: 1,
+    backgroundColor: '#8A2BE2',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginLeft: 4,
+    minHeight: 40,
+  },
+  footerPrintText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
 

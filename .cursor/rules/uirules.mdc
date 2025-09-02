@@ -1,0 +1,57 @@
+---
+description: Ensure all touch targets are at least 44x44dp
+globs: ['**/*.tsx', '**/*.jsx']
+alwaysApply: false
+---
+
+description: Use `Pressable instead of `TouchableOpacity`or`TouchableHighlight` for new components
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Add `hitSlop={10-14}` to small buttons or icons to expand touch area
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Set `pointerEvents="none"` on purely decorative overlays so they don’t block touches
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Use `useNativeDriver: true` for supported animations (`Animated.timing`, etc.)
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Extract common UI into reusable components (e.g., Button, Card, Input) instead of repeating
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Optimize lists using FlatList/SectionList instead of ScrollView for large datasets
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Define styles with StyleSheet.create or a theme system, avoid inline styles everywhere
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Add `accessibilityLabel` to interactive components for screen reader support
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false
+
+---
+
+description: Test touchables inside ScrollView or FlatList to ensure taps are not intercepted
+globs: ["**/*.tsx", "**/*.jsx"]
+alwaysApply: false

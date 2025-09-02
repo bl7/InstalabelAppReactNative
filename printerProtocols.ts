@@ -364,9 +364,10 @@ export const optimizeForPrinter = (
 // ============================================================================
 
 export {
-  generateCompleteLabel,
-  generateShippingLabel,
-  generateProductLabel,
-  generateReceipt,
-  generateInventoryLabel,
+  generateDirectTSPLLabel,
+  generatePPDSLabel,
+  generateUseFirstLabel,
+  generateIngredientLabel,
+  generateMenuItemLabel,
+  generateDefrostLabel,
 } from './tsplUtils';

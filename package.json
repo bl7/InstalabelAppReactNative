@@ -5,12 +5,23 @@
   "scripts": {
     "android": "react-native run-android",
     "ios": "react-native run-ios",
-    "lint": "eslint .",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:ci": "jest --ci --coverage --watchAll=false",
+    "type-check": "tsc --noEmit",
+    "build:android": "cd android && ./gradlew assembleRelease",
+    "build:android-debug": "cd android && ./gradlew assembleDebug",
+    "clean": "cd android && ./gradlew clean && cd .. && rm -rf node_modules && npm install",
+    "prettier": "prettier --write .",
+    "prettier:check": "prettier --check ."
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-community/netinfo": "^11.4.1",
     "lucide-react-native": "^0.539.0",
     "react": "18.2.0",
     "react-native": "0.73.0",
@@ -20,7 +31,9 @@
     "react-native-permissions": "^5.4.2",
     "react-native-reanimated": "^3.6.1",
     "react-native-svg": "^15.12.1",
-    "react-native-vector-icons": "^10.3.0"
+    "react-native-toast-message": "^2.3.3",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-view-shot": "^3.7.0"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
@@ -31,6 +44,7 @@
     "@react-native/eslint-config": "^0.73.1",
     "@react-native/metro-config": "^0.73.2",
     "@react-native/typescript-config": "^0.73.1",
+    "@types/jest": "^30.0.0",
     "@types/react": "^18.2.6",
     "@types/react-native": "^0.72.8",
     "@types/react-native-vector-icons": "^6.4.18",

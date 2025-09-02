@@ -76,7 +76,7 @@ android {
 
     namespace "com.instalabel"
     defaultConfig {
-        applicationId "com.instalabel"
+        applicationId "com.instalabel.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
@@ -103,6 +103,8 @@ android {
         }
     }
 }
+
+
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin

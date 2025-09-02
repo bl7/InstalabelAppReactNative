@@ -6,8 +6,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Alert,
-  PermissionsAndroid,
   Platform,
   StyleSheet,
   ActivityIndicator,
@@ -22,12 +20,38 @@ import {
   Edit3,
   X,
   Plus,
+  LogOut,
+  Wifi,
+  WifiOff,
+  CheckCircle,
+  AlertCircle,
 } from 'lucide-react-native';
-import Ionicons from 'react-native-vector-icons/Ionicons';
 import {usePrinter} from '../PrinterContext';
 import {useAuth} from '../contexts/AuthContext';
+import {useSubscription} from '../contexts/SubscriptionContext';
 import {apiService} from '../services/api';
+import {showToast} from '../utils/toastUtils';
 import LabelSettingsDisplay from '../components/LabelSettingsDisplay';
+import LoadingSpinner from '../components/LoadingSpinner';
+
+// Conditional import for PermissionsAndroid to handle React Native version differences
+let PermissionsAndroid: any;
+try {
+  PermissionsAndroid = require('react-native').PermissionsAndroid;
+} catch (error) {
+  PermissionsAndroid = {
+    request: () => Promise.resolve('granted'),
+    PERMISSIONS: {
+      BLUETOOTH_SCAN: 'android.permission.BLUETOOTH_SCAN',
+      BLUETOOTH_CONNECT: 'android.permission.BLUETOOTH_CONNECT',
+      ACCESS_FINE_LOCATION: 'android.permission.ACCESS_FINE_LOCATION',
+    },
+    RESULTS: {
+      GRANTED: 'granted',
+      DENIED: 'denied',
+    },
+  };
+}
 
 const SettingsPage: React.FC = () => {
   const {
@@ -45,7 +69,13 @@ const SettingsPage: React.FC = () => {
     getConnectionStatus,
   } = usePrinter();
 
-  const {isAuthenticated} = useAuth();
+  const {isAuthenticated, logout, user} = useAuth();
+  const {
+    subscriptionInfo,
+    canPrint,
+    isLoading: isSubscriptionLoading,
+    refreshSubscription,
+  } = useSubscription();
 
   // Label settings from InstaLabel.co API
   const [labelSettings, setLabelSettings] = useState<Record<string, number>>(
@@ -153,9 +183,8 @@ const SettingsPage: React.FC = () => {
   const updateLabelSettings = useCallback(async () => {
     if (!isAuthenticated || !editingSettings) return;
 
-    const {user} = useAuth();
     if (!user?.id) {
-      Alert.alert('Error', 'User ID not found');
+      showToast.error('Error', 'User ID not found');
       return;
     }
 
@@ -176,28 +205,27 @@ const SettingsPage: React.FC = () => {
       if (response.success) {
         setLabelSettings(editingSettings);
         setIsEditingSettings(false);
-        Alert.alert('Success', 'Label settings updated successfully');
+        showToast.success('Success', 'Label settings updated successfully');
       } else {
-        Alert.alert(
+        showToast.error(
           'Error',
           response.message || 'Failed to update label settings',
         );
       }
     } catch (error) {
       console.error('Error updating label settings:', error);
-      Alert.alert('Error', 'Failed to update label settings');
+      showToast.error('Error', 'Failed to update label settings');
     } finally {
       setIsUpdatingSettings(false);
     }
-  }, [isAuthenticated, editingSettings]);
+  }, [isAuthenticated, editingSettings, user]);
 
   // Update label initials
   const updateLabelInitials = useCallback(async () => {
     if (!isAuthenticated) return;
 
-    const {user} = useAuth();
     if (!user?.id) {
-      Alert.alert('Error', 'User ID not found');
+      showToast.error('Error', 'User ID not found');
       return;
     }
 
@@ -213,20 +241,20 @@ const SettingsPage: React.FC = () => {
         setUseInitials(editingUseInitials);
         setAvailableInitials(editingInitials);
         setIsEditingInitials(false);
-        Alert.alert('Success', 'Label initials updated successfully');
+        showToast.success('Success', 'Label initials updated successfully');
       } else {
-        Alert.alert(
+        showToast.error(
           'Error',
           response.message || 'Failed to update label initials',
         );
       }
     } catch (error) {
       console.error('Error updating label initials:', error);
-      Alert.alert('Error', 'Failed to update label initials');
+      showToast.error('Error', 'Failed to update label initials');
     } finally {
       setIsUpdatingInitials(false);
     }
-  }, [isAuthenticated, editingUseInitials, editingInitials]);
+  }, [isAuthenticated, editingUseInitials, editingInitials, user]);
 
   // Helper functions for editing
   const startEditingSettings = useCallback(() => {
@@ -290,10 +318,9 @@ const SettingsPage: React.FC = () => {
         );
 
         if (!allGranted) {
-          Alert.alert(
+          showToast.warning(
             'Permissions Required',
             'Bluetooth and location permissions are required for this app to work properly.',
-            [{text: 'OK'}],
           );
         }
       } catch (error) {
@@ -317,29 +344,29 @@ const SettingsPage: React.FC = () => {
   const handleEnableBluetooth = async () => {
     try {
       await enableBluetooth();
-      Alert.alert('Success', 'Bluetooth enabled successfully');
+      showToast.success('Success', 'Bluetooth enabled successfully');
     } catch (error) {
-      Alert.alert('Error', 'Failed to enable Bluetooth');
+      showToast.error('Error', 'Failed to enable Bluetooth');
     }
   };
 
   const handleConnectToDevice = async (device: any) => {
     try {
       await connectToDevice(device);
-      Alert.alert('Success', `Connected to ${device.name || 'Device'}`);
+      showToast.success('Success', `Connected to ${device.name || 'Device'}`);
     } catch (error) {
       console.error('Error connecting to device:', error);
-      Alert.alert('Error', 'Failed to connect to device');
+      showToast.error('Error', 'Failed to connect to device');
     }
   };
 
   const handleDisconnectDevice = async () => {
     try {
       await disconnectDevice();
-      Alert.alert('Success', 'Device disconnected successfully');
+      showToast.success('Success', 'Device disconnected successfully');
     } catch (error) {
       console.error('Error disconnecting device:', error);
-      Alert.alert('Error', 'Failed to disconnect device');
+      showToast.error('Error', 'Failed to disconnect device');
     }
   };
 
@@ -347,16 +374,16 @@ const SettingsPage: React.FC = () => {
     try {
       const status = await getConnectionStatus();
       if (status) {
-        Alert.alert(
+        showToast.info(
           'Connection Debug Info',
           `Type: ${status.type}\nConnected: ${status.connected}\nClassic: ${status.classicConnected}\nBLE: ${status.bleConnected}`,
         );
       } else {
-        Alert.alert('Debug Info', 'Failed to get connection status');
+        showToast.error('Debug Info', 'Failed to get connection status');
       }
     } catch (error) {
       console.error('Error getting debug info:', error);
-      Alert.alert('Error', 'Failed to get debug info');
+      showToast.error('Error', 'Failed to get debug info');
     }
   };
 
@@ -376,6 +403,9 @@ const SettingsPage: React.FC = () => {
               Manage app preferences and devices
             </Text>
           </View>
+          <TouchableOpacity style={styles.logoutButton} onPress={logout}>
+            <LogOut size={24} color="white" />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -385,8 +415,7 @@ const SettingsPage: React.FC = () => {
           <Text style={styles.sectionTitle}>Bluetooth Status</Text>
           <View style={styles.statusContainer}>
             <View style={styles.statusItem}>
-              <Ionicons
-                name={isBluetoothEnabled ? 'bluetooth' : 'bluetooth-outline'}
+              <Bluetooth
                 size={24}
                 color={isBluetoothEnabled ? '#4CAF50' : '#F44336'}
               />
@@ -413,11 +442,7 @@ const SettingsPage: React.FC = () => {
               style={styles.scanButton}
               onPress={scanForDevices}
               disabled={isScanning}>
-              <Ionicons
-                name={isScanning ? 'refresh' : 'refresh'}
-                size={20}
-                color="white"
-              />
+              <RefreshCw size={20} color="white" />
               <Text style={styles.scanButtonText}>
                 {isScanning ? 'Scanning...' : 'Scan'}
               </Text>
@@ -535,6 +560,109 @@ const SettingsPage: React.FC = () => {
             <Bug size={20} color="white" />
             <Text style={styles.buttonText}>Debug Connection</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* Subscription Status Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Subscription Status</Text>
+            <TouchableOpacity
+              style={styles.refreshButton}
+              onPress={refreshSubscription}
+              disabled={isSubscriptionLoading}>
+              <RefreshCw
+                size={16}
+                color="#8A2BE2"
+                style={[
+                  styles.refreshIcon,
+                  isSubscriptionLoading && styles.rotatingIcon,
+                ]}
+              />
+              <Text style={styles.refreshButtonText}>
+                {isSubscriptionLoading ? 'Loading...' : 'Refresh'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {isSubscriptionLoading ? (
+            <View style={styles.loadingSettings}>
+              <ActivityIndicator size="small" color="#8A2BE2" />
+              <Text style={styles.loadingSettingsText}>
+                Loading subscription status...
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.subscriptionContainer}>
+              {/* Status Row */}
+              <View style={styles.subscriptionStatusRow}>
+                <View style={styles.statusIndicator}>
+                  <View
+                    style={[
+                      styles.statusDot,
+                      {
+                        backgroundColor: canPrint ? '#4CAF50' : '#F44336',
+                      },
+                    ]}
+                  />
+                  <Text style={styles.subscriptionStatusText}>
+                    {canPrint ? 'Active' : 'Inactive'}
+                  </Text>
+                </View>
+                <Text
+                  style={[
+                    styles.subscriptionPlanText,
+                    {color: canPrint ? '#4CAF50' : '#F44336'},
+                  ]}>
+                  {subscriptionInfo.planName || 'No Plan'}
+                </Text>
+              </View>
+
+              {/* Details */}
+              <View style={styles.subscriptionDetails}>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Status:</Text>
+                  <Text style={styles.detailValue}>
+                    {subscriptionInfo.status === 'no_subscription'
+                      ? 'No Subscription'
+                      : subscriptionInfo.status.charAt(0).toUpperCase() +
+                        subscriptionInfo.status.slice(1)}
+                  </Text>
+                </View>
+
+                {subscriptionInfo.isTrialing && subscriptionInfo.trialEnd && (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Trial Ends:</Text>
+                    <Text style={styles.detailValue}>
+                      {new Date(subscriptionInfo.trialEnd).toLocaleDateString()}
+                    </Text>
+                  </View>
+                )}
+
+                {subscriptionInfo.cancelAtPeriodEnd &&
+                  subscriptionInfo.cancelAt && (
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Cancels:</Text>
+                      <Text style={styles.detailValue}>
+                        {new Date(
+                          subscriptionInfo.cancelAt,
+                        ).toLocaleDateString()}
+                      </Text>
+                    </View>
+                  )}
+
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Printing:</Text>
+                  <Text
+                    style={[
+                      styles.detailValue,
+                      {color: canPrint ? '#4CAF50' : '#F44336'},
+                    ]}>
+                    {canPrint ? 'Enabled' : 'Disabled'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* Label Settings Section */}
@@ -1271,6 +1399,66 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     marginTop: 15,
+  },
+  logoutButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    padding: 8,
+    borderRadius: 20,
+    minHeight: 40,
+    minWidth: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Subscription status styles
+  subscriptionContainer: {
+    marginTop: 10,
+  },
+  subscriptionStatusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  statusIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  subscriptionStatusText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  subscriptionPlanText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  subscriptionDetails: {
+    backgroundColor: '#F8F9FA',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 15,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  detailLabel: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  detailValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
   },
 });
 

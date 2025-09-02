@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   SafeAreaView,
   View,
@@ -7,26 +7,34 @@ import {
   TouchableOpacity,
   StyleSheet,
   Platform,
-  Alert,
   StatusBar,
+  Linking,
+  Image,
+  Alert,
 } from 'react-native';
-import {
-  Printer,
-  FileText,
-  Mail,
-  Lock,
-  Eye,
-  EyeOff,
-  LogIn,
-} from 'lucide-react-native';
+import {Eye, EyeOff, LogIn} from 'lucide-react-native';
 import {useAuth} from '../contexts/AuthContext';
+import {showToast} from '../utils/toastUtils';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [greeting, setGreeting] = useState('');
 
   const {login, isLoading} = useAuth();
+
+  // Set dynamic greeting based on time of day
+  useEffect(() => {
+    const getGreeting = () => {
+      const hour = new Date().getHours();
+      if (hour < 12) return 'Good morning';
+      if (hour < 17) return 'Good afternoon';
+      return 'Good evening';
+    };
+    setGreeting(getGreeting());
+  }, []);
 
   const validateEmail = (email: string): boolean => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -35,22 +43,22 @@ const LoginPage: React.FC = () => {
 
   const validateForm = (): boolean => {
     if (!email.trim()) {
-      Alert.alert('Error', 'Please enter your email address');
+      showToast.error('Error', 'Please enter your email address');
       return false;
     }
 
     if (!validateEmail(email.trim())) {
-      Alert.alert('Error', 'Please enter a valid email address');
+      showToast.error('Error', 'Please enter a valid email address');
       return false;
     }
 
     if (!password.trim()) {
-      Alert.alert('Error', 'Please enter your password');
+      showToast.error('Error', 'Please enter your password');
       return false;
     }
 
     if (password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters long');
+      showToast.error('Error', 'Password must be at least 6 characters long');
       return false;
     }
 
@@ -69,13 +77,32 @@ const LoginPage: React.FC = () => {
       });
     } catch (error) {
       console.error('Login error:', error);
-      Alert.alert(
-        'Login Failed',
+      const errorMessage =
         error instanceof Error
           ? error.message
-          : 'An error occurred during login',
-      );
+          : 'An error occurred during login';
+
+      // Show user-friendly error message
+      Alert.alert('Login Failed', errorMessage, [
+        {text: 'OK', style: 'default'},
+      ]);
+
+      showToast.error('Login Failed', errorMessage);
     }
+  };
+
+  const handleForgotPassword = () => {
+    Alert.alert(
+      'Forgot Password',
+      'Please contact your administrator or visit our website to reset your password.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Visit Website',
+          onPress: () => Linking.openURL('https://www.instalabel.co'),
+        },
+      ],
+    );
   };
 
   return (
@@ -85,10 +112,12 @@ const LoginPage: React.FC = () => {
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <View style={styles.headerIconContainer}>
-            <Printer size={32} color="white" />
-            <View style={styles.labelIcon}>
-              <FileText size={16} color="white" />
-            </View>
+            <Image
+              source={require('../../assets/logowhite.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+              accessibilityLabel="InstaLabel Logo"
+            />
           </View>
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerTitle}>InstaLabel</Text>
@@ -98,18 +127,13 @@ const LoginPage: React.FC = () => {
       </View>
 
       <View style={styles.content}>
-
         {/* Login Form */}
         <View style={styles.formContainer}>
-          <Text style={styles.greeting}>Good evening, Welcome Back</Text>
-          <Text style={styles.formSubtitle}>
-            Please login to your account to continue
-          </Text>
+          <Text style={styles.greeting}>{greeting}, Welcome Back</Text>
           <Text style={styles.formTitle}>Sign in to your account</Text>
 
           {/* Email Input */}
           <View style={styles.inputContainer}>
-            <Mail size={20} color="#8A2BE2" />
             <TextInput
               style={styles.textInput}
               placeholder="your.email@company.com"
@@ -120,12 +144,14 @@ const LoginPage: React.FC = () => {
               autoCapitalize="none"
               autoCorrect={false}
               editable={!isLoading}
+              accessibilityLabel="Email input field"
+              accessibilityHint="Enter your email address"
+              autoComplete="email"
             />
           </View>
 
           {/* Password Input */}
           <View style={styles.inputContainer}>
-            <Lock size={20} color="#8A2BE2" />
             <TextInput
               style={styles.textInput}
               placeholder="Enter your password"
@@ -136,10 +162,17 @@ const LoginPage: React.FC = () => {
               autoCapitalize="none"
               autoCorrect={false}
               editable={!isLoading}
+              accessibilityLabel="Password input field"
+              accessibilityHint="Enter your password"
+              autoComplete="password"
             />
             <TouchableOpacity
               style={styles.passwordToggle}
-              onPress={() => setShowPassword(!showPassword)}>
+              onPress={() => setShowPassword(!showPassword)}
+              accessibilityLabel={
+                showPassword ? 'Hide password' : 'Show password'
+              }
+              accessibilityRole="button">
               {showPassword ? (
                 <EyeOff size={20} color="#8A2BE2" />
               ) : (
@@ -148,29 +181,56 @@ const LoginPage: React.FC = () => {
             </TouchableOpacity>
           </View>
 
+          {/* Forgot Password */}
+          <TouchableOpacity
+            style={styles.forgotPassword}
+            onPress={handleForgotPassword}
+            accessibilityRole="button"
+            accessibilityLabel="Forgot password">
+            <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+          </TouchableOpacity>
+
           {/* Login Button */}
           <TouchableOpacity
             style={[styles.loginButton, isLoading && styles.disabledButton]}
             onPress={handleLogin}
-            disabled={isLoading}>
-            <LogIn size={20} color="white" />
-            <Text style={styles.loginButtonText}>
-              {isLoading ? 'Signing In...' : 'Sign In'}
-            </Text>
+            disabled={isLoading}
+            accessibilityRole="button"
+            accessibilityLabel={isLoading ? 'Signing in...' : 'Sign in'}
+            accessibilityState={{disabled: isLoading}}>
+            {isLoading ? (
+              <LoadingSpinner
+                variant="button"
+                message="Signing In..."
+                size="small"
+                color="#fff"
+              />
+            ) : (
+              <>
+                <LogIn size={20} color="white" />
+                <Text style={styles.loginButtonText}>Sign In</Text>
+              </>
+            )}
           </TouchableOpacity>
 
           {/* Footer */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>
               Don't have an account?{' '}
-              <Text style={styles.footerLink}>Visit our website</Text>
+              <Text
+                style={styles.footerLink}
+                onPress={() => Linking.openURL('https://www.instalabel.co')}
+                accessibilityRole="link"
+                accessibilityLabel="Visit our website">
+                Visit our website
+              </Text>
             </Text>
           </View>
 
           {/* Copyright */}
           <Text style={styles.copyright}>
-            Copyright © 2023 - current. InstaLabel Pvt. Ltd. All rights
-            reserved.
+            Copyright © {new Date().getFullYear()} - current. InstaLabel Pvt.
+            Ltd. All rights reserved.
           </Text>
         </View>
       </View>
@@ -181,13 +241,14 @@ const LoginPage: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#8A2BE2',
   },
 
   content: {
     flex: 1,
     padding: 20,
     justifyContent: 'center',
+    backgroundColor: '#8A2BE2',
   },
   header: {
     backgroundColor: '#8A2BE2',
@@ -212,6 +273,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+  },
+  logoImage: {
+    width: 56,
+    height: 56,
   },
   labelIcon: {
     position: 'absolute',
@@ -247,7 +312,7 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   greeting: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
     textAlign: 'center',
@@ -284,7 +349,7 @@ const styles = StyleSheet.create({
   textInput: {
     flex: 1,
     paddingVertical: 18,
-    paddingHorizontal: 10,
+    paddingHorizontal: 16,
     fontSize: 16,
     color: '#333',
   },

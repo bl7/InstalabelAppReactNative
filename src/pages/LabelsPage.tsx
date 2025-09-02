@@ -1,21 +1,22 @@
-import React, {useState, useEffect, useCallback, useRef, Fragment} from 'react';
+import React, {useState, useEffect, useCallback, useRef, useMemo} from 'react';
 import {
   SafeAreaView,
-  ScrollView,
   View,
   Text,
-  TouchableOpacity,
-  TextInput,
   StyleSheet,
-  Alert,
+  TouchableOpacity,
+  ScrollView,
   RefreshControl,
-  ActivityIndicator,
-  Platform,
   StatusBar,
+  TextInput,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
-import Modal from 'react-native-modal';
+
 import {useAuth} from '../contexts/AuthContext';
 import {usePrinter} from '../PrinterContext';
+import OfflineIndicator from '../components/OfflineIndicator';
+import offlineManager from '../utils/offlineManager';
 import {
   apiService,
   Ingredient,
@@ -34,13 +35,19 @@ import {
   generateTSCLabelContent,
   LabelType,
 } from '../utils/labelManagement';
-import LabelPreview from '../components/LabelPreview';
+
+import {showToast} from '../utils/toastUtils';
+// Removed LabelPreview: no longer showing on-screen preview
+import LabelTypeDropdown from '../components/LabelTypeDropdown';
+
 import LabelSettingsDisplay from '../components/LabelSettingsDisplay';
+
+import LoadingSpinner from '../components/LoadingSpinner';
+import QueueModal from '../components/QueueModal';
 import {
   Search,
   SearchX,
   List,
-  FileText,
   Lock,
   Printer,
   CheckCircle,
@@ -62,7 +69,10 @@ import {
   Plus,
   ShoppingCart,
   X,
+  Eye,
 } from 'lucide-react-native';
+
+import CalendarModal from '../components/CalendarModal';
 
 // Types for the labels system
 type TabType = 'ingredients' | 'menu';
@@ -76,12 +86,23 @@ const renderAllergenIcon = (allergen: string, size: number = 12) => {
     console.warn('Invalid allergen passed to renderAllergenIcon:', allergen);
     return <AlertTriangle size={size} color="#856404" />;
   }
+
+  // Return the allergen icon for valid allergens
+  return <AlertTriangle size={size} color="#856404" />;
 };
 
 const LabelsPage: React.FC = () => {
   const {isAuthenticated, user} = useAuth();
-  const {connectedDevice, isPrinting, printComplexLabel, setIsPrinting} =
-    usePrinter();
+  const {
+    connectedDevice,
+    isPrinting,
+    setIsPrinting,
+    addToPrintQueue,
+    printQueue: spoolerQueue,
+    queueStatus,
+    clearPrintQueue: clearSpoolerQueue,
+    printTSPLLabels,
+  } = usePrinter();
 
   // Core data state
   const [printQueue, setPrintQueue] = useState<PrintQueueItem[]>([]);
@@ -94,6 +115,9 @@ const LabelsPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingPrint, setIsLoadingPrint] = useState(false);
+  const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+  const [isSavingQueue, setIsSavingQueue] = useState(false);
 
   // Print settings
   const [customExpiry, setCustomExpiry] = useState<Record<string, string>>({});
@@ -111,12 +135,12 @@ const LabelsPage: React.FC = () => {
   const companyName = user?.company_name || 'InstaLabel Ltd';
 
   // Log company name for debugging
-  console.log('🏢 Company name in LabelsPage:', {
-    company_name: user?.company_name,
-    fallback_company_name: 'InstaLabel Ltd',
-    final_company_name: companyName,
-    user_data: user,
-  });
+  // console.log('🏢 Company name in LabelsPage:', {
+  //   company_name: user?.company_name,
+  //   fallback_company_name: 'InstaLabel Ltd',
+  //   final_company_name: companyName,
+  //   user_data: user,
+  // });
 
   // Label initials settings from InstaLabel.co API
   const [useInitials, setUseInitials] = useState(true);
@@ -125,44 +149,69 @@ const LabelsPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
-  // ---- Simple cross-platform prompt modal (replaces Alert.prompt) ----
-  const promptResolveRef = useRef<((value?: string) => void) | null>(null);
-  const [promptVisible, setPromptVisible] = useState(false);
-  const [promptTitle, setPromptTitle] = useState('');
-  const [promptMessage, setPromptMessage] = useState('');
-  const [promptValue, setPromptValue] = useState('');
+  // Label capture modal state
+  const [captureModalVisible, setCaptureModalVisible] = useState(false);
+  const [currentCaptureItem, setCurrentCaptureItem] =
+    useState<PrintQueueItem | null>(null);
+  const [capturePromiseResolve, setCapturePromiseResolve] = useState<
+    ((value: string) => void) | null
+  >(null);
+  const [capturePromiseReject, setCapturePromiseReject] = useState<
+    ((error: Error) => void) | null
+  >(null);
 
-  const showPrompt = (
-    title: string,
-    message = '',
-    initial = '',
-  ): Promise<string | undefined> => {
-    setPromptTitle(title);
-    setPromptMessage(message);
-    setPromptValue(initial);
-    setPromptVisible(true);
-    return new Promise(resolve => {
-      promptResolveRef.current = resolve;
-    });
+  // Initials selection modal state
+  const [showInitialsModal, setShowInitialsModal] = useState(false);
+  const [editingInitialsUid, setEditingInitialsUid] = useState<string | null>(
+    null,
+  );
+
+  // ---- Calendar modal state ----
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const [calendarInitial, setCalendarInitial] = useState<string>('');
+  const [calendarTargetUid, setCalendarTargetUid] = useState<string>('');
+
+  // Queue modal state
+  const [queueModalVisible, setQueueModalVisible] = useState(false);
+
+  // Handlers for initials modal
+  const handleInitialsSelect = (selectedInitials: string) => {
+    if (editingInitialsUid) {
+      // Update the initials for this specific item
+      setPrintQueue(prev =>
+        prev.map(item =>
+          item.uid === editingInitialsUid
+            ? {...item, customInitials: selectedInitials}
+            : item,
+        ),
+      );
+    } else {
+      // Set global initials when no specific item is being edited
+      setInitials(selectedInitials);
+    }
+    setShowInitialsModal(false);
+    setEditingInitialsUid(null);
   };
 
-  const handlePromptCancel = () => {
-    setPromptVisible(false);
-    if (promptResolveRef.current) promptResolveRef.current(undefined);
-    promptResolveRef.current = null;
+  const handleInitialsCancel = () => {
+    setShowInitialsModal(false);
+    setEditingInitialsUid(null);
   };
 
-  const handlePromptSubmit = () => {
-    setPromptVisible(false);
-    if (promptResolveRef.current) promptResolveRef.current(promptValue);
-    promptResolveRef.current = null;
-  };
-  // -------------------------------------------------------------------
-
-  // Load data from API
+  // Load data from API or cache
   const loadData = useCallback(async () => {
+    console.log('🚀 loadData function called');
+    console.log('🔍 loadData: isAuthenticated =', isAuthenticated);
+    console.log(
+      '🔍 loadData: token =',
+      apiService.getAccessToken() ? 'exists' : 'missing',
+    );
+
     // gate with the current auth state (useCallback depends on isAuthenticated)
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      console.log('❌ loadData: Not authenticated, returning early');
+      return;
+    }
 
     // Check if we have a valid token before making API calls
     const token = apiService.getAccessToken();
@@ -173,62 +222,181 @@ const LabelsPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      console.log(
-        '🌐 Loading data with token:',
-        token ? token.substring(0, 20) + '...' : 'no-token',
-      );
+      let ingredientsData: any[],
+        menuItemsData: any[],
+        allergensData: any[] = [];
 
-      const [ingredientsData, menuItemsData, allergensData] = await Promise.all(
-        [
+      // Always try to load from cache first for better offline experience
+      console.log('🔄 Attempting to load cached data first...');
+
+      const [cachedIngredients, cachedMenuItems] = await Promise.all([
+        offlineManager.getCachedIngredients(),
+        offlineManager.getCachedMenuItems(),
+      ]);
+
+      if (
+        cachedIngredients &&
+        cachedMenuItems &&
+        cachedIngredients.length > 0 &&
+        cachedMenuItems.length > 0
+      ) {
+        console.log('✅ Loaded cached data:', {
+          ingredients: cachedIngredients.length,
+          menuItems: cachedMenuItems.length,
+        });
+
+        ingredientsData = cachedIngredients;
+        menuItemsData = cachedMenuItems;
+        allergensData = []; // Allergens not cached, use empty array
+
+        // Set the data immediately from cache
+        const validIngredients = Array.isArray(ingredientsData)
+          ? ingredientsData.filter(
+              item => item && typeof item === 'object' && item.ingredientName,
+            )
+          : [];
+        const validMenuItems = Array.isArray(menuItemsData)
+          ? menuItemsData.filter(
+              item => item && typeof item === 'object' && item.menuItemName,
+            )
+          : [];
+
+        setIngredients(validIngredients);
+        setMenuItems(validMenuItems);
+        setAllergens([]);
+
+        console.log('✅ Data loaded from cache successfully');
+
+        // Stop loading immediately after cache loads - this is the key fix!
+        setIsLoading(false);
+      }
+
+      // Check if we're online and try to refresh from API in background
+      const isOnline = offlineManager.isOnline();
+      if (isOnline) {
+        console.log('🌐 Online mode - refreshing from API in background...');
+
+        // Don't block UI - refresh in background
+        Promise.all([
           apiService.getIngredients(),
           apiService.getMenuItems(),
           apiService.getAllergens(),
-        ],
-      );
+        ])
+          .then(([freshIngredients, freshMenuItems, freshAllergens]) => {
+            // Cache the fresh data
+            if (freshIngredients && freshMenuItems) {
+              Promise.all([
+                offlineManager.cacheIngredients(freshIngredients),
+                offlineManager.cacheMenuItems(freshMenuItems),
+              ]).catch(cacheError =>
+                console.warn('⚠️ Cache update failed:', cacheError),
+              );
+            }
 
-      // Debug: Log the data structure
-      console.log('📊 Ingredients data:', ingredientsData);
-      console.log('📊 Menu items data:', menuItemsData);
-      console.log('📊 Allergens data:', allergensData);
+            // Update state with fresh data
+            const validIngredients = Array.isArray(freshIngredients)
+              ? freshIngredients.filter(
+                  item =>
+                    item && typeof item === 'object' && item.ingredientName,
+                )
+              : [];
+            const validMenuItems = Array.isArray(freshMenuItems)
+              ? freshMenuItems.filter(
+                  item => item && typeof item === 'object' && item.menuItemName,
+                )
+              : [];
 
-      // Validate data structure before setting state
-      const validIngredients = Array.isArray(ingredientsData)
-        ? ingredientsData.filter(
-            item => item && typeof item === 'object' && item.ingredientName,
-          )
-        : [];
-      const validMenuItems = Array.isArray(menuItemsData)
-        ? menuItemsData.filter(
-            item => item && typeof item === 'object' && item.menuItemName,
-          )
-        : [];
+            setIngredients(validIngredients);
+            setMenuItems(validMenuItems);
+            setAllergens(Array.isArray(freshAllergens) ? freshAllergens : []);
 
-      console.log('✅ Valid ingredients:', validIngredients.length);
-      console.log('✅ Valid menu items:', validMenuItems.length);
+            console.log('✅ Data refreshed from API in background');
+          })
+          .catch(error => {
+            console.warn(
+              '⚠️ Background API refresh failed, keeping cached data:',
+              error,
+            );
+            // Don't show error toast if we have cached data
+            if (!cachedIngredients || !cachedMenuItems) {
+              showToast.error(
+                'Error',
+                'Failed to refresh data. Using cached data.',
+              );
+            }
+          });
+      } else {
+        console.log('📱 Offline mode - using cached data only');
+        if (!cachedIngredients || !cachedMenuItems) {
+          showToast.error(
+            'Offline',
+            'No cached data available. Please connect to internet first.',
+          );
+          setIsLoading(false);
+          return;
+        }
+      }
 
-      setIngredients(validIngredients);
-      setMenuItems(validMenuItems);
-      setAllergens(Array.isArray(allergensData) ? allergensData : []);
-
-      console.log('✅ Data loaded successfully');
+      // Data has already been set to state above, no need to set again
+      console.log('✅ Data loading process completed');
     } catch (error) {
       console.error('❌ Error loading data:', error);
-      Alert.alert('Error', 'Failed to load data. Please try again.');
+      showToast.error('Error', 'Failed to load data. Please try again.');
     } finally {
       setIsLoading(false);
     }
-  }, [isAuthenticated]);
+  }, []); // Remove isAuthenticated dependency to prevent circular dependency
 
-  // Load data when authentication changes
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadData();
-      loadLabelInitials();
-      loadLabelSettings();
+  // Load cached print queue on app start
+  const loadCachedPrintQueue = useCallback(async () => {
+    try {
+      setIsLoadingQueue(true);
+      console.log('🔄 Loading cached print queue for labels page...');
+      const cachedQueue = await offlineManager.getPrintQueue('labels');
+      console.log('🔄 Retrieved cached queue:', cachedQueue);
+
+      if (cachedQueue) {
+        setPrintQueue(cachedQueue);
+        console.log(
+          '✅ Loaded cached print queue:',
+          cachedQueue.length,
+          'items',
+        );
+      } else {
+        console.log('ℹ️ No cached queue found, starting with empty queue');
+        setPrintQueue([]);
+      }
+
+      // Mark that we've loaded the cache, so future changes will be saved
+      hasLoadedCache.current = true;
+    } catch (error) {
+      console.error('❌ Error loading cached print queue:', error);
+      setPrintQueue([]);
+      hasLoadedCache.current = true;
+    } finally {
+      setIsLoadingQueue(false);
     }
-  }, [isAuthenticated, loadData]);
+  }, []);
 
-  // Load label initials from InstaLabel.co API
+  // Save print queue to cache whenever it changes
+  const hasLoadedCache = useRef(false);
+
+  useEffect(() => {
+    if (hasLoadedCache.current) {
+      setIsSavingQueue(true);
+      console.log(
+        '💾 Saving print queue to cache:',
+        printQueue.length,
+        'items',
+      );
+      // Always persist, including empty arrays so clears are respected
+      offlineManager.savePrintQueue(printQueue, 'labels').finally(() => {
+        setIsSavingQueue(false);
+      });
+    }
+  }, [printQueue]);
+
+  // Load label initials from API or cache
   const loadLabelInitials = useCallback(async () => {
     if (!isAuthenticated) return;
 
@@ -239,38 +407,89 @@ const LabelsPage: React.FC = () => {
     }
 
     setIsLoadingInitials(true);
+    let cachedInitials: any = null;
+
     try {
-      console.log('🔍 Loading label initials from InstaLabel.co API...');
-      const response = await apiService.getLabelInitials();
+      // Try to load from cache first
+      cachedInitials = await offlineManager.getCachedLabelInitials();
+      if (cachedInitials && Array.isArray(cachedInitials)) {
+        console.log('✅ Loaded label initials from cache:', cachedInitials);
+        setAvailableInitials(cachedInitials);
+        setUseInitials(true);
 
-      // Set the use_initials flag from API response
-      setUseInitials(response.use_initials || false);
+        // Stop loading immediately after cache loads
+        setIsLoadingInitials(false);
+      }
 
-      if (
-        response.use_initials &&
-        response.initials &&
-        Array.isArray(response.initials)
-      ) {
-        setAvailableInitials(response.initials);
-        // Set the first available initial as default if current one is not in the list
-        if (!response.initials.includes(initials)) {
-          setInitials(response.initials[0] || 'NG');
-        }
-        console.log('✅ Label initials loaded:', response.initials);
+      // Check if we're online and try to refresh from API in background
+      const isOnline = offlineManager.isOnline();
+      if (isOnline) {
+        console.log(
+          '🔍 Loading label initials from InstaLabel.co API in background...',
+        );
+
+        // Don't block UI - refresh in background
+        apiService
+          .getLabelInitials()
+          .then(response => {
+            // Set the use_initials flag from API response
+            setUseInitials(response.use_initials || false);
+
+            if (
+              response.use_initials &&
+              response.initials &&
+              Array.isArray(response.initials)
+            ) {
+              setAvailableInitials(response.initials);
+              // Set the first available initial as default if current one is not in the list
+              if (!response.initials.includes(initials)) {
+                setInitials(response.initials[0] || 'NG');
+              }
+              console.log(
+                '✅ Label initials loaded from API in background:',
+                response.initials,
+              );
+
+              // Cache the data for offline use
+              offlineManager
+                .cacheLabelInitials(response.initials)
+                .catch(cacheError =>
+                  console.warn('⚠️ Cache update failed:', cacheError),
+                );
+            } else {
+              console.log('⚠️ No initials available from API, using defaults');
+              if (!cachedInitials) {
+                setAvailableInitials(['NG']);
+              }
+            }
+          })
+          .catch(error => {
+            console.warn(
+              '⚠️ Background API refresh failed, keeping cached data:',
+              error,
+            );
+            if (!cachedInitials) {
+              setAvailableInitials(['NG']);
+            }
+          });
       } else {
-        console.log('⚠️ No initials available from API, using defaults');
-        setAvailableInitials(['NG']);
+        console.log('📱 Offline mode - using cached label initials');
+        if (!cachedInitials) {
+          setAvailableInitials(['NG']);
+        }
       }
     } catch (error) {
       console.error('❌ Error loading label initials:', error);
       // Keep default initials on error
-      setAvailableInitials(['NG']);
+      if (!cachedInitials) {
+        setAvailableInitials(['NG']);
+      }
     } finally {
       setIsLoadingInitials(false);
     }
-  }, [isAuthenticated, initials]);
+  }, []); // Remove isAuthenticated dependency to prevent circular dependency
 
-  // Load label settings from InstaLabel.co API
+  // Load label settings from API or cache
   const loadLabelSettings = useCallback(async () => {
     if (!isAuthenticated) return;
 
@@ -283,33 +502,85 @@ const LabelsPage: React.FC = () => {
     }
 
     setIsLoadingLabelSettings(true);
+    let cachedSettings: any = null;
+
     try {
-      console.log('🔍 Loading label settings from InstaLabel.co API...');
-      const response = await apiService.getLabelSettings();
+      // Try to load from cache first
+      cachedSettings = await offlineManager.getCachedLabelSettings();
+      if (cachedSettings && typeof cachedSettings === 'object') {
+        console.log('✅ Loaded label settings from cache:', cachedSettings);
+        setLabelSettings(cachedSettings);
 
-      if (response.settings && Array.isArray(response.settings)) {
-        // Convert array of settings to a map for easy lookup
-        const settingsMap: Record<string, number> = {};
-        response.settings.forEach(setting => {
-          if (setting.label_type && typeof setting.expiry_days === 'number') {
-            settingsMap[setting.label_type] = setting.expiry_days;
-          }
-        });
+        // Stop loading immediately after cache loads
+        setIsLoadingLabelSettings(false);
+      }
 
-        setLabelSettings(settingsMap);
-        console.log('✅ Label settings loaded:', settingsMap);
+      // Check if we're online and try to refresh from API in background
+      const isOnline = offlineManager.isOnline();
+      if (isOnline) {
+        console.log(
+          '🔍 Loading label settings from InstaLabel.co API in background...',
+        );
+
+        // Don't block UI - refresh in background
+        apiService
+          .getLabelSettings()
+          .then(response => {
+            if (response.settings && Array.isArray(response.settings)) {
+              // Convert array of settings to a map for easy lookup
+              const settingsMap: Record<string, number> = {};
+              response.settings.forEach(setting => {
+                if (
+                  setting.label_type &&
+                  typeof setting.expiry_days === 'number'
+                ) {
+                  settingsMap[setting.label_type] = setting.expiry_days;
+                }
+              });
+
+              setLabelSettings(settingsMap);
+              console.log(
+                '✅ Label settings loaded from API in background:',
+                settingsMap,
+              );
+
+              // Cache the data for offline use
+              offlineManager
+                .cacheLabelSettings(settingsMap)
+                .catch(cacheError =>
+                  console.warn('⚠️ Cache update failed:', cacheError),
+                );
+            } else {
+              console.log('⚠️ No label settings available from API');
+              if (!cachedSettings) {
+                setLabelSettings({});
+              }
+            }
+          })
+          .catch(error => {
+            console.warn(
+              '⚠️ Background API refresh failed, keeping cached data:',
+              error,
+            );
+            if (!cachedSettings) {
+              setLabelSettings({});
+            }
+          });
       } else {
-        console.log('⚠️ No label settings available from API, using defaults');
-        setLabelSettings({});
+        console.log('📱 Offline mode - using cached label settings');
+        if (!cachedSettings) {
+          setLabelSettings({});
+        }
       }
     } catch (error) {
       console.error('❌ Error loading label settings:', error);
-      // Keep default settings on error
-      setLabelSettings({});
+      if (!cachedSettings) {
+        setLabelSettings({});
+      }
     } finally {
       setIsLoadingLabelSettings(false);
     }
-  }, [isAuthenticated]);
+  }, []); // Remove isAuthenticated dependency to prevent circular dependency
 
   // Get expiry days for a specific label type, using API settings if available
   const getExpiryDaysForLabelType = useCallback(
@@ -335,9 +606,21 @@ const LabelsPage: React.FC = () => {
   // Refresh data
   const onRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await loadData();
-    setIsRefreshing(false);
-  }, [loadData]);
+    try {
+      await loadData();
+      await loadLabelInitials();
+      await loadLabelSettings();
+      await loadCachedPrintQueue();
+    } catch (error) {
+      console.error('❌ Error during refresh:', error);
+      showToast.error(
+        'Refresh Failed',
+        'Failed to refresh data. Please try again.',
+      );
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadData, loadLabelInitials, loadLabelSettings, loadCachedPrintQueue]);
 
   // Reset to first page when search term changes
   useEffect(() => {
@@ -349,132 +632,210 @@ const LabelsPage: React.FC = () => {
     setCurrentPage(1);
   }, [activeTab]);
 
-  // Queue management functions
-  const addToPrintQueue = (item: Ingredient | MenuItem, type: TabType) => {
-    // Debug: Log what we're receiving
-    console.log('🔍 addToPrintQueue called with:');
-    console.log('🔍 type parameter:', type);
-    console.log('🔍 item:', item);
+  // Load data when authentication changes
+  useEffect(() => {
+    console.log('🔍 LabelsPage useEffect triggered:', {isAuthenticated});
+    if (isAuthenticated) {
+      console.log('✅ Authentication confirmed, loading data...');
 
-    // Get the name first and validate it
-    const name =
-      type === 'ingredients'
-        ? (item as Ingredient).ingredientName
-        : (item as MenuItem).menuItemName;
+      // Batch all data loading calls for better performance
+      const loadAllData = async () => {
+        try {
+          console.log('🚀 Starting data loading sequence...');
 
-    console.log('🔍 extracted name:', name);
+          // Load data first (this sets the main ingredients and menu items)
+          console.log('🚀 Calling loadData...');
+          await loadData();
 
-    if (!name) {
-      console.error('Cannot add item with undefined name to queue:', item);
-      return;
-    }
+          // Then load supporting data
+          console.log('🚀 Calling loadLabelInitials...');
+          await loadLabelInitials();
+          console.log('🚀 Calling loadLabelSettings...');
+          await loadLabelSettings();
+          console.log('🚀 Calling loadCachedPrintQueue...');
+          await loadCachedPrintQueue();
 
-    // Detect allergens
-    let detectedAllergens: string[] = [];
-    let ingredientNames: string[] = [];
-    let expiryDays: number;
+          console.log('✅ All data loading completed successfully');
+        } catch (error) {
+          console.error('❌ Error in data loading sequence:', error);
+        }
+      };
 
-    if (type === 'ingredients') {
-      const ingredient = item as Ingredient;
-      // Safety check for allergens array
-      if (!ingredient.allergens || !Array.isArray(ingredient.allergens)) {
-        console.warn('Ingredient has invalid allergens:', ingredient);
-        detectedAllergens = [];
-      } else {
-        detectedAllergens = ingredient.allergens.map(a => a.allergenName);
-      }
-      ingredientNames = [ingredient.ingredientName];
-      // Use expiryDays from ingredient data
-      expiryDays = ingredient.expiryDays || 3;
-      console.log(`📅 Using ingredient expiry days: ${expiryDays} days`);
+      // Use a small delay to ensure authentication state is fully established
+      const timer = setTimeout(() => {
+        loadAllData();
+      }, 100);
+
+      return () => clearTimeout(timer);
     } else {
-      const menuItem = item as MenuItem;
-      // Safety check for ingredients array
-      if (!menuItem.ingredients || !Array.isArray(menuItem.ingredients)) {
-        console.warn('MenuItem has invalid ingredients:', menuItem);
-        detectedAllergens = [];
-        ingredientNames = [];
+      console.log('❌ Not authenticated, skipping data load');
+    }
+  }, [isAuthenticated]); // Only depend on isAuthenticated, not the individual functions
+
+  // Debug effect to monitor authentication state changes
+  useEffect(() => {
+    console.log('🔍 LabelsPage auth state changed:', {isAuthenticated});
+  }, [isAuthenticated]);
+
+  // Fallback data loading - if no data after initial load, try again
+  useEffect(() => {
+    if (
+      isAuthenticated &&
+      !isLoading &&
+      ingredients.length === 0 &&
+      menuItems.length === 0
+    ) {
+      console.log(
+        '⚠️ No data loaded after initial load, attempting fallback...',
+      );
+
+      // Wait a bit longer and try again
+      const fallbackTimer = setTimeout(() => {
+        if (ingredients.length === 0 && menuItems.length === 0) {
+          console.log('🔄 Fallback: Attempting to load data again...');
+          loadData();
+        }
+      }, 2000);
+
+      return () => clearTimeout(fallbackTimer);
+    }
+  }, [
+    isAuthenticated,
+    isLoading,
+    ingredients.length,
+    menuItems.length,
+    loadData,
+  ]);
+
+  // Queue management functions
+  const addItemToPrintQueue = useCallback(
+    (item: Ingredient | MenuItem, type: TabType) => {
+      // Debug: Log what we're receiving
+      console.log('🔍 addToPrintQueue called with:');
+      console.log('🔍 type parameter:', type);
+      console.log('🔍 item:', item);
+
+      // Get the name first and validate it
+      const name =
+        type === 'ingredients'
+          ? (item as Ingredient).ingredientName
+          : (item as MenuItem).menuItemName;
+
+      console.log('🔍 extracted name:', name);
+
+      if (!name) {
+        console.error('Cannot add item with undefined name to queue:', item);
+        return;
+      }
+
+      // Detect allergens
+      let detectedAllergens: string[] = [];
+      let ingredientNames: string[] = [];
+      let expiryDays: number;
+
+      if (type === 'ingredients') {
+        const ingredient = item as Ingredient;
+        // Safety check for allergens array
+        if (!ingredient.allergens || !Array.isArray(ingredient.allergens)) {
+          console.warn('Ingredient has invalid allergens:', ingredient);
+          detectedAllergens = [];
+        } else {
+          detectedAllergens = ingredient.allergens.map(a => a.allergenName);
+        }
+        ingredientNames = [ingredient.ingredientName];
+        // Use expiryDays from ingredient data
+        expiryDays = ingredient.expiryDays || 3;
+        console.log(`📅 Using ingredient expiry days: ${expiryDays} days`);
       } else {
-        // Map menu item ingredients to actual ingredient objects and extract names
-        const ingredientObjects = menuItem.ingredients
-          .map(ingredientObj => {
-            // Handle both old string format and new object format
-            const ingredientName =
-              typeof ingredientObj === 'string'
-                ? ingredientObj
-                : ingredientObj.ingredientName;
+        const menuItem = item as MenuItem;
+        // Safety check for ingredients array
+        if (!menuItem.ingredients || !Array.isArray(menuItem.ingredients)) {
+          console.warn('MenuItem has invalid ingredients:', menuItem);
+          detectedAllergens = [];
+          ingredientNames = [];
+        } else {
+          // Map menu item ingredients to actual ingredient objects and extract names
+          const ingredientObjects = menuItem.ingredients
+            .map(ingredientObj => {
+              // Handle both old string format and new object format
+              const ingredientName =
+                typeof ingredientObj === 'string'
+                  ? ingredientObj
+                  : ingredientObj.ingredientName;
 
-            const ingredient = ingredients.find(
-              i => i.ingredientName === ingredientName,
-            );
-            return ingredient;
-          })
-          .filter((ing): ing is Ingredient => ing !== undefined); // Type guard to remove undefined
+              const ingredient = ingredients.find(
+                i => i.ingredientName === ingredientName,
+              );
+              return ingredient;
+            })
+            .filter((ing): ing is Ingredient => ing !== undefined); // Type guard to remove undefined
 
-        // Extract ingredient names
-        ingredientNames = ingredientObjects.map(ing => ing.ingredientName);
+          // Extract ingredient names
+          ingredientNames = ingredientObjects.map(ing => ing.ingredientName);
 
-        // Extract all allergens from the ingredient objects
-        const allAllergens: string[] = [];
-        ingredientObjects.forEach(ingredient => {
-          if (ingredient.allergens) {
-            ingredient.allergens.forEach(allergen => {
-              allAllergens.push(allergen.allergenName);
-            });
-          }
-        });
+          // Extract all allergens from the ingredient objects
+          const allAllergens: string[] = [];
+          ingredientObjects.forEach(ingredient => {
+            if (ingredient.allergens) {
+              ingredient.allergens.forEach(allergen => {
+                allAllergens.push(allergen.allergenName);
+              });
+            }
+          });
 
-        // Remove duplicates and set detected allergens
-        detectedAllergens = [...new Set(allAllergens)];
+          // Remove duplicates and set detected allergens
+          detectedAllergens = [...new Set(allAllergens)];
 
+          console.log(
+            `🔍 Menu item ${(item as MenuItem).menuItemName}: mapped ${
+              ingredientNames.length
+            } ingredients with ${detectedAllergens.length} allergens`,
+          );
+        }
+        // For menu items, use label settings with 'default' as default
+        const defaultLabelType = 'default';
+        expiryDays = getExpiryDaysForLabelType(defaultLabelType);
         console.log(
-          `🔍 Menu item ${(item as MenuItem).menuItemName}: mapped ${
-            ingredientNames.length
-          } ingredients with ${detectedAllergens.length} allergens`,
+          `📅 Using menu item expiry days for ${defaultLabelType}: ${expiryDays} days`,
         );
       }
-      // For menu items, use label settings with 'prep' as default
-      const defaultLabelType = 'prep';
-      expiryDays = getExpiryDaysForLabelType(defaultLabelType);
-      console.log(
-        `📅 Using menu item expiry days for ${defaultLabelType}: ${expiryDays} days`,
-      );
-    }
 
-    // Generate a truly unique ID
-    const timestamp = Date.now();
-    const randomSuffix = Math.random().toString(36).substr(2, 9);
-    const uid = `${type}-${timestamp}-${randomSuffix}`;
+      // Generate a truly unique ID
+      const timestamp = Date.now();
+      const randomSuffix = Math.random().toString(36).substr(2, 9);
+      const uid = `${type}-${timestamp}-${randomSuffix}`;
 
-    const newItem: PrintQueueItem = {
-      uid,
-      name, // Use the validated name
-      type,
-      quantity: 1,
-      labelType: type === 'ingredients' ? 'prep' : 'prep',
-      expiryDate: calculateExpiryDate(
-        type === 'ingredients' ? 'prep' : 'prep',
-        undefined, // no custom expiry
-        expiryDays,
-      ),
-      allergens: detectedAllergens,
-      ingredients: ingredientNames, // Store the ingredient names
-      labelHeight: '31mm', // Fixed height
-    };
+      const newItem: PrintQueueItem = {
+        uid,
+        name, // Use the validated name
+        type,
+        quantity: 1,
+        labelType: type === 'ingredients' ? 'prep' : 'default',
+        expiryDate: calculateExpiryDate(
+          type === 'ingredients' ? 'prep' : 'default',
+          undefined, // no custom expiry
+          expiryDays,
+        ),
+        allergens: detectedAllergens,
+        ingredients: ingredientNames, // Store the ingredient names
+        labelHeight: '31mm', // Fixed height
+      };
 
-    setPrintQueue(prev => [...prev, newItem]);
-    // Removed alert to improve UX flow - no need to confirm every addition
-  };
+      setPrintQueue(prev => [...prev, newItem]);
+      // Removed alert to improve UX flow - no need to confirm every addition
+    },
+    [ingredients, getExpiryDaysForLabelType],
+  );
 
-  const removeFromQueue = (uid: string) => {
+  const removeFromQueue = useCallback((uid: string) => {
     if (!uid) {
       console.warn('Cannot remove item with undefined uid');
       return;
     }
     setPrintQueue(prev => prev.filter(item => item.uid !== uid));
-  };
+  }, []);
 
-  const updateQuantity = (uid: string, quantity: number) => {
+  const updateQuantity = useCallback((uid: string, quantity: number) => {
     if (!uid) {
       console.warn('Cannot update item with undefined uid');
       return;
@@ -488,9 +849,9 @@ const LabelsPage: React.FC = () => {
         item.uid === uid ? {...item, quantity: Math.max(1, quantity)} : item,
       ),
     );
-  };
+  }, []);
 
-  const incrementQuantity = (uid: string) => {
+  const incrementQuantity = useCallback((uid: string) => {
     if (!uid) {
       console.warn('Cannot increment item with undefined uid');
       return;
@@ -500,67 +861,83 @@ const LabelsPage: React.FC = () => {
         item.uid === uid ? {...item, quantity: item.quantity + 1} : item,
       ),
     );
-  };
+  }, []);
 
-  const decrementQuantity = (uid: string) => {
+  const decrementQuantity = useCallback((uid: string) => {
     if (!uid) {
       console.warn('Cannot decrement item with undefined uid');
       return;
     }
-    setPrintQueue(prev =>
-      prev.map(item =>
-        item.uid === uid
-          ? {...item, quantity: Math.max(1, item.quantity - 1)}
-          : item,
-      ),
-    );
-  };
+    setPrintQueue(prev => {
+      const found = prev.find(item => item.uid === uid);
+      if (!found) return prev;
+      if (found.quantity <= 1) {
+        // remove when reaching zero
+        return prev.filter(item => item.uid !== uid);
+      }
+      return prev.map(item =>
+        item.uid === uid ? {...item, quantity: item.quantity - 1} : item,
+      );
+    });
+  }, []);
 
-  const updateLabelType = (uid: string, labelType: LabelType) => {
-    if (!uid) {
-      console.warn('Cannot update item with undefined uid');
-      return;
-    }
-    if (!labelType) {
-      console.warn('Cannot update item with undefined labelType');
-      return;
-    }
-    setPrintQueue(prev =>
-      prev.map(item => {
-        if (item.uid === uid) {
-          let expiryDays: number;
+  const updateLabelType = useCallback(
+    (uid: string, labelType: LabelType) => {
+      if (!uid) {
+        console.warn('Cannot update item with undefined uid');
+        return;
+      }
+      if (!labelType) {
+        console.warn('Cannot update item with undefined labelType');
+        return;
+      }
+      setPrintQueue(prev =>
+        prev.map(item => {
+          if (item.uid === uid) {
+            let expiryDays: number;
 
-          if (item.type === 'ingredients') {
-            // For ingredients, use their original expiryDays from data
-            const ingredient = ingredients.find(
-              i => i.ingredientName === item.name,
+            if (item.type === 'ingredients') {
+              // For ingredients, use their original expiryDays from data
+              const ingredient = ingredients.find(
+                i => i.ingredientName === item.name,
+              );
+              expiryDays = ingredient?.expiryDays || 3;
+              console.log(
+                `📅 Ingredient ${item.name}: using original expiry days ${expiryDays}`,
+              );
+            } else {
+              // For menu items, use label settings for the new label type
+              expiryDays = getExpiryDaysForLabelType(labelType);
+              console.log(
+                `📅 Menu item ${item.name}: using ${labelType} expiry days ${expiryDays}`,
+              );
+            }
+
+            // Recalculate expiry date based on new label type
+            const newExpiryDate = calculateExpiryDate(
+              labelType,
+              customExpiry[uid],
+              expiryDays,
             );
-            expiryDays = ingredient?.expiryDays || 3;
-            console.log(
-              `📅 Ingredient ${item.name}: using original expiry days ${expiryDays}`,
-            );
-          } else {
-            // For menu items, use label settings for the new label type
-            expiryDays = getExpiryDaysForLabelType(labelType);
-            console.log(
-              `📅 Menu item ${item.name}: using ${labelType} expiry days ${expiryDays}`,
-            );
+            return {...item, labelType, expiryDate: newExpiryDate};
           }
+          return item;
+        }),
+      );
+    },
+    [ingredients, getExpiryDaysForLabelType, customExpiry],
+  );
 
-          // Recalculate expiry date based on new label type
-          const newExpiryDate = calculateExpiryDate(
-            labelType,
-            customExpiry[uid],
-            expiryDays,
-          );
-          return {...item, labelType, expiryDate: newExpiryDate};
-        }
-        return item;
-      }),
-    );
+  // Queue management functions for modal
+  const handleUpdateQuantity = (uid: string, quantity: number) => {
+    updateQuantity(uid, quantity);
   };
 
-  const updateCustomExpiry = (uid: string, expiry: string) => {
+  const handleUpdateLabelType = (uid: string, labelType: LabelType) => {
+    updateLabelType(uid, labelType);
+  };
+
+  const updateCustomExpiry = useCallback((uid: string, expiry: string) => {
     if (!uid) {
       console.warn('Cannot update item with undefined uid');
       return;
@@ -579,61 +956,86 @@ const LabelsPage: React.FC = () => {
         item.uid === uid ? {...item, expiryDate: expiry} : item,
       ),
     );
-  };
 
-  // openDatePicker now uses the cross-platform prompt
-  const openDatePicker = async (uid: string, currentDate: string) => {
-    try {
-      const result = await showPrompt(
-        'Set Custom Expiry Date',
-        'Enter date (YYYY-MM-DD):',
-        currentDate,
-      );
-      if (result === undefined) {
-        // user cancelled
-        return;
-      }
-      if (result && /^\d{4}-\d{2}-\d{2}$/.test(result)) {
-        updateCustomExpiry(uid, result);
-      } else {
-        Alert.alert('Invalid Date', 'Please use YYYY-MM-DD format');
-      }
-    } catch (err) {
-      console.warn('Prompt error:', err);
+    console.log(`📅 Updated custom expiry for ${uid}: ${expiry}`);
+  }, []);
+
+  // Helper functions for date format conversion
+  const convertToYYYYMMDD = (dateString: string): string => {
+    // If already in YYYY-MM-DD format, return as is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
     }
+
+    // Convert from DD.MM.YYYY format to YYYY-MM-DD
+    const parts = dateString.split('.');
+    if (parts.length === 3) {
+      const [day, month, year] = parts;
+      return `${year}-${month}-${day}`;
+    }
+
+    // If format is unknown, return today's date in YYYY-MM-DD format
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = (today.getMonth() + 1).toString().padStart(2, '0');
+    const day = today.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
-  const clearPrintQueue = () => {
+  const convertToDDMMYYYY = (dateString: string): string => {
+    // If already in DD.MM.YYYY format, return as is
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateString)) {
+      return dateString;
+    }
+
+    // Convert from YYYY-MM-DD format to DD.MM.YYYY
+    const parts = dateString.split('-');
+    if (parts.length === 3) {
+      const [year, month, day] = parts;
+      return `${day}.${month}.${year}`;
+    }
+
+    // If format is unknown, return today's date in DD.MM.YYYY format
+    const today = new Date();
+    const day = today.getDate().toString().padStart(2, '0');
+    const month = (today.getMonth() + 1).toString().padStart(2, '0');
+    const year = today.getFullYear();
+    return `${day}.${month}.${year}`;
+  };
+
+  // openDatePicker now uses CalendarModal
+  const openDatePicker = (uid: string, currentDate: string) => {
+    const yyyyMMddDate = convertToYYYYMMDD(currentDate);
+    setCalendarTargetUid(uid);
+    setCalendarInitial(yyyyMMddDate);
+    setCalendarVisible(true);
+  };
+
+  const clearPrintQueue = useCallback(() => {
     if (!printQueue || printQueue.length === 0) {
-      Alert.alert('Empty Queue', 'The print queue is already empty');
+      showToast.info('Empty Queue', 'The print queue is already empty');
       return;
     }
 
-    Alert.alert(
-      'Clear Queue',
-      'Are you sure you want to clear the entire print queue?',
-      [
-        {text: 'Cancel', style: 'cancel'},
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: () => {
-            setPrintQueue([]);
-            setCustomExpiry({});
-          },
-        },
-      ],
-    );
-  };
+    // For now, we'll just clear the queue directly since toast doesn't support confirmations
+    // In a real app, you might want to use a custom modal for confirmations
+    setPrintQueue([]);
+    setCustomExpiry({});
+    clearSpoolerQueue(); // Also clear the spooler queue
+    showToast.success('Queue Cleared', 'Print queue has been cleared');
+  }, [printQueue, clearSpoolerQueue]);
 
   const printLabels = async () => {
     if (!printQueue || printQueue.length === 0) {
-      Alert.alert('Empty Queue', 'Please add items to the print queue first');
+      showToast.error(
+        'Empty Queue',
+        'Please add items to the print queue first',
+      );
       return;
     }
 
     if (!connectedDevice) {
-      Alert.alert(
+      showToast.error(
         'No Printer Connected',
         'Please connect a printer first from the Connection page.',
       );
@@ -641,141 +1043,81 @@ const LabelsPage: React.FC = () => {
     }
 
     try {
-      setIsPrinting(true);
+      setIsLoadingPrint(true);
 
-      // Print each item in the queue
-      for (const item of printQueue) {
-        const quantity = item.quantity;
+      // Use TSPL direct printing instead of image capture
+      await printTSPLLabels(
+        printQueue,
+        ingredients,
+        menuItems,
+        customExpiry,
+        useInitials ? initials : '',
+        companyName,
+      );
 
-        // Generate the full label content using the same logic as the preview
-        let labelContentObj: {
-          header: string;
-          expiryLine: string;
-          printedLine: string;
-          ingredientsLine?: string;
-          initialsLine?: string;
-        };
-
-        if (item.type === 'ingredients') {
-          // For ingredients, generate ingredient label content
-          const ingredient = ingredients.find(
-            i => i.ingredientName === item.name,
-          );
-          if (ingredient) {
-            const expiryDate = customExpiry[item.uid] || item.expiryDate;
-            labelContentObj = generateTSCLabelContent(
-              item.name,
-              item.labelType,
-              expiryDate,
-              [item.name], // Single ingredient name
-              item.allergens || [],
-              undefined, // printedDate will be generated inside
-              useInitials ? initials : undefined,
-              companyName, // Pass company name for PPDS labels
-            );
-          } else {
-            // Fallback - create simple label
-            labelContentObj = {
-              header: item.name,
-              expiryLine: '',
-              printedLine: '',
-            };
-          }
-        } else {
-          // For menu items, generate menu item label content
-          const defaultLabelType = 'prep';
-          const expiryDays =
-            labelSettings[defaultLabelType] ||
-            getDefaultExpiryDays(defaultLabelType);
-          const expiryDate = customExpiry[item.uid] || item.expiryDate;
-
-          // Get the full ingredient objects from the stored ingredients array
-          const ingredientObjects = item.ingredients
-            .map(ingredientName => {
-              return ingredients.find(i => i.ingredientName === ingredientName);
-            })
-            .filter((ing): ing is Ingredient => ing !== undefined);
-
-          labelContentObj = generateTSCLabelContent(
-            item.name,
-            item.labelType,
-            expiryDate,
-            ingredientObjects, // Pass full ingredient objects
-            item.allergens || [],
-            undefined, // printedDate will be generated inside
-            useInitials ? initials : undefined,
-            companyName, // Pass company name for PPDS labels
-          );
-        }
-
-        // Print the specified quantity for this item
-        for (let i = 0; i < quantity; i++) {
-          await printComplexLabel(labelContentObj);
-
-          // Log the print action
-          try {
-            await apiService.logPrintAction({
-              labelType: item.labelType,
-              itemId: item.uid,
-              itemName: item.name,
-              quantity: 1, // Log each individual print
-              expiryDate: customExpiry[item.uid] || item.expiryDate,
-              initial: useInitials ? initials : undefined,
-              labelHeight: item.labelHeight,
-              printerUsed: connectedDevice?.name || 'Unknown Printer',
-              sessionId: `print_${Date.now()}`, // Generate unique session ID
-            });
-          } catch (logError) {
-            console.warn('Failed to log print action:', logError);
-            // Continue printing even if logging fails
-          }
-
-          // Small delay between prints to prevent buffer overflow
-          if (i < quantity - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        }
-      }
-
-      Alert.alert(
-        'Success',
-        `${printQueue.length} label types printed successfully!`,
+      showToast.success(
+        'Print Jobs Queued',
+        `${printQueue.length} labels have been sent to the printer using TSPL protocol.`,
       );
       setPrintQueue([]);
       setCustomExpiry({});
     } catch (error) {
       console.error('Print error:', error);
-      Alert.alert(
-        'Error',
-        'Failed to print labels. Please check your printer connection.',
+      showToast.error(
+        'Print Failed',
+        error instanceof Error
+          ? error.message
+          : 'An error occurred while printing',
       );
     } finally {
-      setIsPrinting(false);
+      setIsLoadingPrint(false);
     }
   };
 
-  const renderTabContent = () => {
-    const items = (activeTab === 'ingredients' ? ingredients : menuItems) || [];
-    const filteredItems = items.filter(item => {
-      const name =
-        activeTab === 'ingredients'
-          ? (item as Ingredient).ingredientName
-          : (item as MenuItem).menuItemName;
+  // Memoized expensive calculations
+  const filteredIngredients = useMemo(() => {
+    if (!searchTerm.trim()) return ingredients;
+    return ingredients.filter(ingredient =>
+      ingredient.ingredientName
+        .toLowerCase()
+        .includes(searchTerm.toLowerCase()),
+    );
+  }, [ingredients, searchTerm]);
 
-      // Safety check: skip items with undefined/null names
-      if (!name) {
-        console.warn('Item with undefined name found:', item);
-        return false;
-      }
+  const filteredMenuItems = useMemo(() => {
+    if (!searchTerm.trim()) return menuItems;
+    return menuItems.filter(item =>
+      item.menuItemName.toLowerCase().includes(searchTerm.toLowerCase()),
+    );
+  }, [menuItems, searchTerm]);
 
-      return name.toLowerCase().includes((searchTerm || '').toLowerCase());
-    });
-
-    // Calculate pagination
-    const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
+  const paginatedIngredients = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    const currentItems = filteredItems.slice(startIndex, endIndex);
+    return filteredIngredients.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredIngredients, currentPage, itemsPerPage]);
+
+  const paginatedMenuItems = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    return filteredMenuItems.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredMenuItems, currentPage, itemsPerPage]);
+
+  const totalPages = useMemo(() => {
+    const totalItems =
+      activeTab === 'ingredients'
+        ? filteredIngredients.length
+        : filteredMenuItems.length;
+    return Math.ceil(totalItems / itemsPerPage);
+  }, [
+    activeTab,
+    filteredIngredients.length,
+    filteredMenuItems.length,
+    itemsPerPage,
+  ]);
+
+  const renderTabContent = () => {
+    const items =
+      (activeTab === 'ingredients' ? filteredIngredients : filteredMenuItems) ||
+      [];
 
     if (isLoading) {
       return (
@@ -787,6 +1129,81 @@ const LabelsPage: React.FC = () => {
         </View>
       );
     }
+
+    // Helpers for inline controls
+    const getDefaultExpiryForRow = (item: Ingredient | MenuItem): string => {
+      if (activeTab === 'ingredients') {
+        const ing = item as Ingredient;
+        const days = ing.expiryDays || 3;
+        return calculateExpiryDate('prep', undefined, days);
+      } else {
+        const days = getExpiryDaysForLabelType('prep');
+        return calculateExpiryDate('prep', undefined, days);
+      }
+    };
+
+    const handleIncrement = (item: Ingredient | MenuItem) => {
+      const name =
+        activeTab === 'ingredients'
+          ? (item as Ingredient).ingredientName
+          : (item as MenuItem).menuItemName;
+      const q = printQueue.find(it => it.name === name);
+      if (q) {
+        incrementQuantity(q.uid);
+      } else {
+        addItemToPrintQueue(item, activeTab);
+      }
+    };
+
+    const handleDecrement = (item: Ingredient | MenuItem) => {
+      const name =
+        activeTab === 'ingredients'
+          ? (item as Ingredient).ingredientName
+          : (item as MenuItem).menuItemName;
+      const q = printQueue.find(it => it.name === name);
+      if (q) {
+        decrementQuantity(q.uid);
+      }
+    };
+
+    const handleOpenDatePicker = (
+      item: Ingredient | MenuItem,
+      current: string,
+    ) => {
+      const name =
+        activeTab === 'ingredients'
+          ? (item as Ingredient).ingredientName
+          : (item as MenuItem).menuItemName;
+      const q = printQueue.find(it => it.name === name);
+      if (q) {
+        openDatePicker(q.uid, current);
+      } else {
+        addItemToPrintQueue(item, activeTab);
+        setTimeout(() => {
+          const created = printQueue.find(it => it.name === name);
+          if (created) openDatePicker(created.uid, current);
+        }, 0);
+      }
+    };
+
+    const handleUpdateLabelTypeInline = (
+      item: Ingredient | MenuItem,
+      newType: LabelType,
+    ) => {
+      const name =
+        activeTab === 'ingredients'
+          ? (item as Ingredient).ingredientName
+          : (item as MenuItem).menuItemName;
+      const q = printQueue.find(it => it.name === name);
+      if (q) {
+        updateLabelType(q.uid, newType);
+      } else {
+        showToast.info(
+          'Add to Queue',
+          'Add the item before changing label type',
+        );
+      }
+    };
 
     return (
       <View style={styles.tabContent}>
@@ -802,7 +1219,11 @@ const LabelsPage: React.FC = () => {
               placeholderTextColor="#999"
             />
             {searchTerm ? (
-              <TouchableOpacity onPress={() => setSearchTerm('')}>
+              <TouchableOpacity
+                hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                onPress={() => setSearchTerm('')}>
                 <SearchX size={20} color="#666" />
               </TouchableOpacity>
             ) : null}
@@ -811,7 +1232,7 @@ const LabelsPage: React.FC = () => {
 
         {/* Items List */}
         <View style={styles.itemsList}>
-          {filteredItems.length === 0 ? (
+          {items.length === 0 ? (
             <View style={styles.emptyState}>
               <SearchX size={48} color="#ccc" />
               <Text style={styles.emptyStateText}>
@@ -822,85 +1243,113 @@ const LabelsPage: React.FC = () => {
                   ? 'Try adjusting your search terms'
                   : 'Pull to refresh to load data'}
               </Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={onRefresh}
+                disabled={isRefreshing}>
+                <Text style={styles.retryButtonText}>
+                  {isRefreshing ? 'Loading...' : 'Retry'}
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <>
-              {/* Current Items */}
-              {currentItems
+              {(activeTab === 'ingredients'
+                ? paginatedIngredients
+                : paginatedMenuItems
+              )
                 .map(item => {
                   const name =
                     activeTab === 'ingredients'
                       ? (item as Ingredient).ingredientName
                       : (item as MenuItem).menuItemName;
+                  if (!name) return null;
 
-                  // Safety check: skip items with undefined/null names
-                  if (!name) {
-                    console.warn(
-                      'Item with undefined name found in map:',
-                      item,
-                    );
-                    return null;
-                  }
-
-                  const isInQueue = printQueue.some(
-                    queueItem =>
-                      queueItem.name && name && queueItem.name === name,
-                  );
-                  const queueItem = printQueue.find(
-                    queueItem =>
-                      queueItem.name && name && queueItem.name === name,
-                  );
+                  const queueItem = printQueue.find(q => q.name === name);
+                  const currentQty = queueItem?.quantity ?? 0;
+                  const currentExpiry = queueItem
+                    ? customExpiry[queueItem.uid] || queueItem.expiryDate
+                    : getDefaultExpiryForRow(item);
 
                   return (
-                    <TouchableOpacity
-                      key={`${activeTab}-${
-                        activeTab === 'ingredients'
-                          ? (item as Ingredient).ingredientName
-                          : (item as MenuItem).menuItemName
-                      }-${Math.random().toString(36).substr(2, 9)}`}
-                      style={styles.itemCard}
-                      onPress={() =>
-                        !isInQueue && addToPrintQueue(item, activeTab)
-                      }>
-                      <View style={styles.itemMainInfo}>
-                        <Text style={styles.itemName}>{name}</Text>
+                    <View key={`${activeTab}-${name}`} style={styles.itemCard}>
+                      <View style={styles.itemTopRow}>
+                        <View style={styles.itemMainInfo}>
+                          <Text style={styles.itemName}>{name}</Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.expiryRow,
+                              styles.expiryRowPressable,
+                            ]}
+                            hitSlop={{top: 16, bottom: 16, left: 16, right: 16}}
+                            pressRetentionOffset={{
+                              top: 20,
+                              bottom: 20,
+                              left: 20,
+                              right: 20,
+                            }}
+                            delayPressIn={0}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                            accessibilityLabel="Set custom expiry date"
+                            onPress={() =>
+                              handleOpenDatePicker(item, currentExpiry)
+                            }>
+                            <Text style={styles.queueItemExpiry}>
+                              Expires: {currentExpiry}
+                            </Text>
+                            <Calendar size={16} color="#8A2BE2" />
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.itemActions}>
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                            accessibilityRole="button"
+                            accessibilityLabel="Decrease quantity"
+                            onPress={() => handleDecrement(item)}>
+                            <Minus size={16} color="#666" />
+                          </TouchableOpacity>
+                          <Text style={styles.quantityDisplay}>
+                            {currentQty}
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.quantityButton}
+                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                            accessibilityRole="button"
+                            accessibilityLabel="Increase quantity"
+                            onPress={() => handleIncrement(item)}>
+                            <Plus size={16} color="#666" />
+                          </TouchableOpacity>
+                        </View>
                       </View>
 
-                      <View style={styles.itemActions}>
-                        <TouchableOpacity
-                          style={[
-                            styles.addButton,
-                            isInQueue && styles.addButtonDisabled,
-                          ]}
-                          onPress={() =>
-                            !isInQueue && addToPrintQueue(item, activeTab)
-                          }
-                          disabled={isInQueue}>
-                          {isInQueue ? (
-                            <>
-                              <CheckCircle size={16} color="#4CAF50" />
-                              <Text
-                                style={[
-                                  styles.addButtonText,
-                                  styles.addButtonTextDisabled,
-                                ]}>
-                                {queueItem?.quantity || 1} in Queue
-                              </Text>
-                            </>
-                          ) : (
-                            <>
-                              <Plus size={16} color="#fff" />
-                              <Text style={styles.addButtonText}>Add</Text>
-                            </>
-                          )}
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
+                      {activeTab === 'menu' && (
+                        <View style={styles.labelTypeRow}>
+                          <View
+                            style={[styles.labelTypeContainer, {marginTop: 6}]}>
+                            <LabelTypeDropdown
+                              value={
+                                queueItem
+                                  ? queueItem.labelType === 'ppds'
+                                    ? 'default'
+                                    : (queueItem.labelType as any)
+                                  : 'default'
+                              }
+                              onValueChange={newType =>
+                                handleUpdateLabelTypeInline(item, newType)
+                              }
+                              availableTypes={['default', 'cooked', 'prep']}
+                            />
+                          </View>
+                        </View>
+                      )}
+                    </View>
                   );
                 })
                 .filter(Boolean)}
-              {/* Remove null values */}
-              {/* Pagination Controls */}
+
               {totalPages > 1 && (
                 <View style={styles.paginationContainer}>
                   <View style={styles.paginationControls}>
@@ -956,217 +1405,7 @@ const LabelsPage: React.FC = () => {
     );
   };
 
-  const renderPrintQueue = () => (
-    <View style={styles.queueSection}>
-      <View style={styles.queueHeader}>
-        <View style={styles.queueHeaderTop}>
-          <View style={styles.queueHeaderLeft}>
-            <ShoppingCart size={24} color="#8A2BE2" />
-            <Text style={styles.sectionTitle}>Print Queue</Text>
-            <View style={styles.queueCount}>
-              <Text style={styles.queueCountText}>
-                {printQueue.length} item{printQueue.length !== 1 ? 's' : ''}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {printQueue.length > 0 && (
-          <View style={styles.queueHeaderButtons}>
-            <TouchableOpacity
-              style={styles.clearQueueButton}
-              onPress={clearPrintQueue}>
-              <X size={16} color="#F44336" />
-              <Text style={styles.clearQueueText}>Clear</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.printLabelsButton}
-              onPress={printLabels}
-              disabled={!printQueue || printQueue.length === 0 || isPrinting}>
-              <Printer size={16} color="#fff" />
-              <Text style={styles.printLabelsButtonText}>
-                {isPrinting ? 'Printing...' : 'Print All'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-
-      {!printQueue || printQueue.length === 0 ? (
-        <View style={styles.emptyQueue}>
-          <List size={48} color="#ccc" />
-          <Text style={styles.emptyQueueText}>Your print queue is empty.</Text>
-          <Text style={styles.emptyQueueSubtext}>
-            Add items to get started!
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.queueList}>
-          {printQueue &&
-            printQueue.map(item => (
-              <View key={item.uid} style={styles.queueItem}>
-                <View style={styles.queueItemInfo}>
-                  <Text style={styles.queueItemName}>{item.name}</Text>
-                  <Text style={styles.queueItemType}>
-                    {item.type === 'ingredients' ? 'Ingredient' : 'Menu Item'} •{' '}
-                    {item.labelType}
-                  </Text>
-                  <View style={styles.expiryRow}>
-                    <Text style={styles.queueItemExpiry}>
-                      Expires: {customExpiry[item.uid] || item.expiryDate}
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.calendarButton}
-                      onPress={() =>
-                        openDatePicker(
-                          item.uid,
-                          customExpiry[item.uid] || item.expiryDate,
-                        )
-                      }>
-                      <Calendar size={16} color="#8A2BE2" />
-                    </TouchableOpacity>
-                  </View>
-
-                  {/* Allergen display */}
-                  {item.allergens && item.allergens.length > 0 && (
-                    <View style={styles.queueItemAllergens}>
-                      {item.allergens.slice(0, 3).map((allergen, index) => (
-                        <View key={index} style={styles.queueAllergenTag}>
-                          {renderAllergenIcon(allergen, 12)}
-                          <Text style={styles.queueAllergenText}>
-                            {allergen || 'Unknown'}
-                          </Text>
-                        </View>
-                      ))}
-                      {item.allergens.length > 3 && (
-                        <Text style={styles.moreAllergens}>
-                          +{Math.max(0, item.allergens.length - 3)} more
-                        </Text>
-                      )}
-                    </View>
-                  )}
-                </View>
-
-                <View style={styles.queueItemControls}>
-                  {/* Quantity Controls with +/- buttons */}
-                  <View style={styles.quantityControls}>
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => decrementQuantity(item.uid)}>
-                      <Minus size={16} color="#666" />
-                    </TouchableOpacity>
-                    <Text style={styles.quantityDisplay}>{item.quantity}</Text>
-                    <TouchableOpacity
-                      style={styles.quantityButton}
-                      onPress={() => incrementQuantity(item.uid)}>
-                      <Plus size={16} color="#666" />
-                    </TouchableOpacity>
-                  </View>
-
-                  {/* Label Type Dropdown for Menu Items */}
-                  {item.type === 'menu' && (
-                    <View style={styles.labelTypeContainer}>
-                      <TouchableOpacity
-                        style={styles.labelTypeDropdown}
-                        onPress={() => {
-                          // For now, cycle through options - you can implement a proper dropdown later
-                          const currentType = item.labelType;
-                          const types: LabelType[] = ['cooked', 'prep', 'ppds'];
-                          const currentIndex = types.indexOf(currentType);
-                          const nextType =
-                            types[(currentIndex + 1) % types.length];
-                          updateLabelType(item.uid, nextType);
-                        }}>
-                        <Text style={styles.labelTypeDropdownText}>
-                          {item.labelType.charAt(0).toUpperCase() +
-                            item.labelType.slice(1)}
-                        </Text>
-                        <Text style={styles.dropdownArrow}>▼</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-
-                  {/* Remove Button */}
-                  <TouchableOpacity
-                    style={styles.removeButton}
-                    onPress={() => removeFromQueue(item.uid)}>
-                    <X size={16} color="#fff" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-        </View>
-      )}
-    </View>
-  );
-
-  const renderInitialsSection = () => {
-    // Don't render anything if initials are disabled
-    if (!useInitials) {
-      return null;
-    }
-
-    return (
-      <View style={styles.initialsSection}>
-        <View style={styles.initialsRow}>
-          <Text style={styles.initialsLabel}>Initials:</Text>
-          {isLoadingInitials ? (
-            <View style={styles.initialsLoading}>
-              <ActivityIndicator size="small" color="#8A2BE2" />
-              <Text style={styles.initialsLoadingText}>Loading...</Text>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.initialsDropdown}
-              onPress={() => {
-                // Cycle through available initials from API
-                const currentIndex = availableInitials.indexOf(initials);
-                const nextInitials =
-                  availableInitials[
-                    (currentIndex + 1) % availableInitials.length
-                  ];
-                setInitials(nextInitials);
-              }}>
-              <Text style={styles.initialsDropdownText}>{initials}</Text>
-              <Text style={styles.dropdownArrow}>▼</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    );
-  };
-
-  const renderLabelPreview = () => {
-    if (printQueue.length === 0) {
-      return (
-        <View style={styles.previewPlaceholder}>
-          <FileText size={48} color="#ccc" />
-          <Text style={styles.previewText}>
-            Select items to preview labels.
-          </Text>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.previewScroll}>
-        {printQueue.map(item => (
-          <View key={item.uid} style={styles.previewContainer}>
-            <LabelPreview
-              item={item}
-              ingredients={ingredients}
-              menuItems={menuItems}
-              initials={useInitials ? initials : ''}
-              onUpdateLabelType={updateLabelType}
-              labelSettings={labelSettings}
-              companyName={companyName}
-            />
-          </View>
-        ))}
-      </View>
-    );
-  };
+  // Removed label preview renderer
 
   if (!isAuthenticated) {
     return (
@@ -1185,36 +1424,114 @@ const LabelsPage: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#8A2BE2" />
-      {/* Prompt Modal */}
+      {/* Calendar Modal */}
+      <CalendarModal
+        visible={calendarVisible}
+        initialDate={calendarInitial}
+        onClose={() => setCalendarVisible(false)}
+        onSelect={selectedYmd => {
+          // convert YYYY-MM-DD to DD.MM.YYYY then save
+          const ddMMyyyyDate = convertToDDMMYYYY(selectedYmd);
+          if (calendarTargetUid) {
+            updateCustomExpiry(calendarTargetUid, ddMMyyyyDate);
+          }
+          setCalendarVisible(false);
+        }}
+        onClear={() => {
+          if (calendarTargetUid) {
+            // Remove custom override; reset to computed expiry
+            setCustomExpiry(prev => {
+              const copy = {...prev};
+              delete copy[calendarTargetUid];
+              return copy;
+            });
+          }
+          setCalendarVisible(false);
+        }}
+        title="Set Custom Expiry Date"
+      />
+
+      {/* Queue Modal */}
+      <QueueModal
+        visible={queueModalVisible}
+        onClose={() => setQueueModalVisible(false)}
+        queueItems={printQueue}
+        onUpdateQueue={setPrintQueue}
+        onRemoveItem={removeFromQueue}
+        onUpdateQuantity={handleUpdateQuantity}
+        onUpdateExpiry={updateCustomExpiry}
+        onUpdateLabelType={handleUpdateLabelType}
+        customExpiry={customExpiry}
+        onUpdateCustomExpiry={updateCustomExpiry}
+        onOpenDatePicker={(uid, currentDate) => {
+          setQueueModalVisible(false);
+          setTimeout(() => {
+            openDatePicker(uid, currentDate);
+          }, 300);
+        }}
+        showLabelType={true}
+      />
+
+      {/* Initials Selection Modal */}
       <Modal
-        visible={promptVisible}
+        visible={showInitialsModal}
         transparent
         animationType="fade"
-        onRequestClose={handlePromptCancel}>
-        <View style={styles.promptOverlay}>
-          <View style={styles.promptContainer}>
-            <Text style={styles.promptTitle}>{promptTitle}</Text>
-            {promptMessage ? (
-              <Text style={styles.promptMessage}>{promptMessage}</Text>
-            ) : null}
-            <TextInput
-              value={promptValue}
-              onChangeText={setPromptValue}
-              style={styles.promptInput}
-              placeholder="YYYY-MM-DD"
-            />
-            <View style={styles.promptButtons}>
+        onRequestClose={handleInitialsCancel}>
+        <View style={styles.initialsModalOverlay}>
+          <View style={styles.initialsModalContainer}>
+            <View style={styles.initialsModalHeader}>
+              <Text style={styles.initialsModalTitle}>
+                Select Label Initials
+              </Text>
+              <Text style={styles.initialsModalSubtitle}>
+                Choose initials for all labels in the print queue
+              </Text>
+            </View>
+
+            <ScrollView
+              style={styles.initialsModalList}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled">
+              <View style={styles.initialsGrid}>
+                {availableInitials.map(init => (
+                  <TouchableOpacity
+                    key={init}
+                    style={[
+                      styles.initialsModalOption,
+                      initials === init && styles.initialsModalOptionSelected,
+                    ]}
+                    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                    onPress={() => handleInitialsSelect(init)}>
+                    <Text
+                      style={[
+                        styles.initialsModalOptionText,
+                        initials === init &&
+                          styles.initialsModalOptionTextSelected,
+                      ]}>
+                      {init}
+                    </Text>
+                    {initials === init && (
+                      <Text style={styles.initialsModalCheckmark}>✓</Text>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+
+            <View style={styles.initialsModalActions}>
               <TouchableOpacity
-                onPress={handlePromptCancel}
-                style={[styles.promptButton, styles.promptCancel]}>
-                <Text style={styles.promptButtonText}>Cancel</Text>
+                style={styles.initialsModalCancelButton}
+                onPress={handleInitialsCancel}>
+                <Text style={styles.initialsModalCancelButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={handlePromptSubmit}
-                style={[styles.promptButton, styles.promptSubmit]}>
-                <Text style={[styles.promptButtonText, {color: 'white'}]}>
-                  Set
-                </Text>
+                style={styles.initialsModalConfirmButton}
+                onPress={() => {
+                  // Apply the selected initials
+                  handleInitialsSelect(initials);
+                }}>
+                <Text style={styles.initialsModalConfirmButtonText}>Apply</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1224,16 +1541,103 @@ const LabelsPage: React.FC = () => {
       {/* Labels Header */}
       <View style={styles.labelsHeader}>
         <View style={styles.headerContent}>
-          <View style={styles.headerIconContainer}>
-            <FileText size={32} color="white" />
-          </View>
           <View style={styles.headerTextContainer}>
-            <Text style={styles.labelsTitle}>Labels</Text>
-            <Text style={styles.labelsSubtitle}>
-              Create and print custom labels for ingredients and menu items
-            </Text>
+            {/* Compact header stats (no white/gray background) */}
+            <View style={styles.headerStatsRow}>
+              {/* Initials selector moved from queue to header */}
+              {useInitials ? (
+                <TouchableOpacity
+                  style={styles.headerInitialsButton}
+                  hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change initials"
+                  onPress={() => {
+                    setEditingInitialsUid(null);
+                    setShowInitialsModal(true);
+                  }}>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}>
+                    <Text style={styles.headerStatNumber}>{initials}</Text>
+                    <Text style={styles.headerInitialsArrow}>▼</Text>
+                  </View>
+                  <Text style={styles.headerStatLabel}>Initials</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.headerStatItem}>
+                  <Text style={styles.headerStatNumber}>--</Text>
+                  <Text style={styles.headerStatLabel}>Initials</Text>
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={styles.headerStatItemPressable}
+                onPress={() => setQueueModalVisible(true)}
+                hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                <View style={styles.queueStatContent}>
+                  <Text style={styles.headerStatNumber}>
+                    {printQueue.length}
+                  </Text>
+                  <View style={styles.queueStatRow}>
+                    <Text style={styles.headerStatLabel}>Print Queue</Text>
+                    <Eye size={12} color="rgba(255,255,255,0.8)" />
+                  </View>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.headerStatItem}>
+                <Printer
+                  size={18}
+                  color={connectedDevice ? '#C8FACC' : '#FFD0D0'}
+                />
+                <Text style={styles.headerStatLabel}>
+                  {connectedDevice ? 'Ready' : 'No Printer'}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
+      </View>
+
+      {/* Fixed Tabs below header */}
+      <View style={styles.tabNavigation}>
+        <TouchableOpacity
+          style={[
+            styles.tab,
+            activeTab === 'ingredients' ? styles.activeTab : styles.inactiveTab,
+          ]}
+          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+          accessibilityRole="tab"
+          accessibilityLabel="Ingredients tab"
+          onPress={() => setActiveTab('ingredients')}>
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === 'ingredients' && styles.activeTabText,
+            ]}>
+            Ingredients ({ingredients.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.tab,
+            activeTab === 'menu' ? styles.activeTab : styles.inactiveTab,
+          ]}
+          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+          accessibilityRole="tab"
+          accessibilityLabel="Menu items tab"
+          onPress={() => setActiveTab('menu')}>
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === 'menu' && styles.activeTabText,
+            ]}>
+            Menu Items ({menuItems.length})
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Main Content - Using ScrollView with proper patterns */}
@@ -1242,85 +1646,70 @@ const LabelsPage: React.FC = () => {
         contentContainerStyle={styles.mainContent}
         showsVerticalScrollIndicator={true}
         bounces={true}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
         }>
-        {/* Stats Section */}
-        <View style={styles.statsSection}>
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>
-              {ingredients.length + menuItems.length}
-            </Text>
-            <Text style={styles.statLabel}>Total Items</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>{printQueue.length}</Text>
-            <Text style={styles.statLabel}>In Queue</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Printer
-              size={20}
-              color={connectedDevice ? '#4CAF50' : '#F44336'}
-            />
-            <Text style={styles.statLabel}>
-              {connectedDevice ? 'Ready' : 'No Printer'}
-            </Text>
-          </View>
-        </View>
-        {/* Ingredients/Menu Items Section */}
-        <View style={styles.itemsSection}>
-          {/* Tab Navigation */}
-          <View style={styles.tabNavigation}>
-            <TouchableOpacity
-              style={[
-                styles.tab,
-                activeTab === 'ingredients' && styles.activeTab,
-              ]}
-              onPress={() => setActiveTab('ingredients')}>
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === 'ingredients' && styles.activeTabText,
-                ]}>
-                Ingredients ({ingredients.length})
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.tab, activeTab === 'menu' && styles.activeTab]}
-              onPress={() => setActiveTab('menu')}>
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === 'menu' && styles.activeTabText,
-                ]}>
-                Menu Items ({menuItems.length})
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {renderTabContent()}
-        </View>
+        {/* Items Section (tabs now fixed above) */}
+        <View style={styles.itemsSection}>{renderTabContent()}</View>
 
         {/* Initials Section */}
-        {renderInitialsSection()}
-
         {/* Print Queue Section */}
-        {renderPrintQueue()}
+        {/* Print queue UI removed; functionality handled inline and in footer */}
 
-        {/* Label Preview Section */}
-        <View style={styles.previewSection}>
-          <Text style={styles.sectionTitle}>
-            Print Preview (Actual Size: 60mm × 40mm)
-          </Text>
-          <Text style={styles.previewSubtitle}>
-            Preview shows exactly what will be printed on each label
-          </Text>
-          {renderLabelPreview()}
-        </View>
+        {/* Label Preview Section removed as per product decision */}
       </ScrollView>
+
+      {/* Persistent Footer with Clear, Print All, and FAB */}
+      <View style={styles.footerContainer}>
+        <View style={styles.footerContent}>
+          <TouchableOpacity
+            style={styles.footerClearButton}
+            accessibilityRole="button"
+            accessibilityLabel="Clear print queue"
+            onPress={clearPrintQueue}
+            disabled={!printQueue || printQueue.length === 0}>
+            <Text style={styles.footerClearText}>Clear</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.footerPrintButton}
+            accessibilityRole="button"
+            accessibilityLabel="Print all labels"
+            onPress={printLabels}
+            disabled={!printQueue || printQueue.length === 0 || isLoadingPrint}>
+            <Text style={styles.footerPrintText}>Print all</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Offline Indicator */}
+      <OfflineIndicator />
+
+      {/* Loading Overlays */}
+      {isLoading && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Loading data..."
+          color="#8A2BE2"
+        />
+      )}
+
+      {isLoadingPrint && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Printing labels..."
+          color="#4CAF50"
+        />
+      )}
+
+      {isLoadingQueue && (
+        <LoadingSpinner
+          variant="overlay"
+          message="Loading queue..."
+          color="#8A2BE2"
+        />
+      )}
     </SafeAreaView>
   );
 };
@@ -1336,13 +1725,13 @@ const styles = StyleSheet.create({
   mainContent: {
     paddingHorizontal: 16,
     paddingTop: 20,
-    paddingBottom: 40,
+    paddingBottom: 120,
   },
 
   // Labels Header
   labelsHeader: {
     backgroundColor: '#8A2BE2',
-    paddingVertical: 20,
+    paddingVertical: 12,
     paddingHorizontal: 16,
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 4},
@@ -1354,14 +1743,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 16,
-  },
-  headerIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   headerTextContainer: {
     flex: 1,
@@ -1378,40 +1759,52 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     lineHeight: 18,
   },
-  // Stats Section
-  statsSection: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+  headerStatsRow: {
+    width: '100%',
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    justifyContent: 'space-around',
   },
-  statItem: {
+  headerStatItem: {
     alignItems: 'center',
     flex: 1,
   },
-  statNumber: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#8A2BE2',
-    marginBottom: 4,
+  headerStatItemPressable: {
+    alignItems: 'center',
+    flex: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
-  statLabel: {
+  queueStatContent: {
+    alignItems: 'center',
+  },
+  queueStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  headerStatNumber: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: 'white',
+    marginBottom: 2,
+  },
+  headerStatLabel: {
     fontSize: 12,
-    color: '#666',
-    textAlign: 'center',
+    color: 'white',
+    opacity: 0.9,
   },
-  statDivider: {
-    width: 1,
-    height: 30,
-    backgroundColor: '#e0e0e0',
+  headerInitialsButton: {
+    flex: 1,
+    alignItems: 'center',
+    minHeight: 44,
+  },
+  headerInitialsArrow: {
+    fontSize: 12,
+    color: 'white',
+    opacity: 0.9,
   },
   settingsSection: {
     backgroundColor: '#fff',
@@ -1431,39 +1824,12 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
 
-  initialsSection: {
-    marginTop: 10,
-  },
-  initialsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  initialsLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginRight: 10,
-  },
-  initialsDropdown: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-  },
-  initialsDropdownText: {
-    fontSize: 14,
-    color: '#333',
-    fontWeight: '600',
-  },
-  dropdownArrow: {
+  queueItemInitials: {
     fontSize: 12,
     color: '#666',
-    marginLeft: 8,
+    fontWeight: '500',
   },
+
   initialsLoading: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1481,45 +1847,55 @@ const styles = StyleSheet.create({
   },
 
   itemsSection: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+    padding: 0,
+    marginBottom: 0,
+    shadowColor: 'transparent',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   tabNavigation: {
     flexDirection: 'row',
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 20,
+    backgroundColor: '#8A2BE2',
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    marginBottom: 0,
+    borderBottomWidth: 0,
   },
   tab: {
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 16,
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 0,
+    minHeight: 44,
   },
   activeTab: {
-    backgroundColor: '#8A2BE2',
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    backgroundColor: '#f8f9fa',
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    marginBottom: -12,
+    zIndex: 2,
+    shadowColor: 'transparent',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+  inactiveTab: {
+    backgroundColor: 'transparent',
+    zIndex: 1,
   },
   tabText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#6c757d',
+    color: 'rgba(255,255,255,0.8)',
   },
   activeTabText: {
-    color: 'white',
+    color: '#4B4FAE',
   },
   tabContent: {
     width: '100%',
@@ -1612,6 +1988,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 4,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    justifyContent: 'flex-start',
+    minHeight: 56,
+  },
+  itemTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1619,6 +2001,8 @@ const styles = StyleSheet.create({
   itemMainInfo: {
     flex: 1,
     marginRight: 12,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
   },
   itemName: {
     fontSize: 16,
@@ -1658,6 +2042,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  printButtonsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   queueCount: {
     backgroundColor: '#f0f0ff',
     borderRadius: 12,
@@ -1680,6 +2069,21 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   printLabelsButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  printTSPLButton: {
+    backgroundColor: '#2196F3',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+  },
+  printTSPLButtonText: {
     color: 'white',
     fontSize: 14,
     fontWeight: '600',
@@ -1749,9 +2153,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  expiryRowPressable: {
+    paddingVertical: 6,
+    paddingRight: 6,
+    minHeight: 44,
+  },
   calendarButton: {
-    padding: 5,
+    padding: 12,
     marginLeft: 8,
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   queueItemAllergens: {
     flexDirection: 'row',
@@ -1793,12 +2206,16 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   quantityButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 4,
     backgroundColor: '#f8f9fa',
     borderWidth: 1,
     borderColor: '#e9ecef',
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   quantityDisplay: {
@@ -1810,13 +2227,14 @@ const styles = StyleSheet.create({
   labelTypeContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-    marginLeft: 10,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    marginLeft: 0,
+    alignSelf: 'flex-start',
   },
   labelTypeLabel: {
     fontSize: 12,
@@ -1844,13 +2262,18 @@ const styles = StyleSheet.create({
   removeButton: {
     backgroundColor: '#F44336',
     borderRadius: 8,
-    padding: 8,
+    padding: 12,
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   previewSection: {
     backgroundColor: '#fff',
     borderRadius: 16,
     padding: 20,
+    marginBottom: 20,
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 2},
     shadowOpacity: 0.1,
@@ -1872,11 +2295,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 15,
   },
-  previewScroll: {
-    // Remove maxHeight constraint to allow expansion with new labels
+  previewList: {
+    paddingHorizontal: 10,
   },
   previewContainer: {
-    marginBottom: 20,
+    marginBottom: 15,
   },
   authRequired: {
     alignItems: 'center',
@@ -1984,6 +2407,253 @@ const styles = StyleSheet.create({
   promptButtonText: {
     fontSize: 14,
     color: '#333',
+  },
+
+  initialsSelectorContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  initialsSelectorHeader: {
+    marginBottom: 15,
+  },
+  initialsSelectorTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1a1a1a',
+    marginBottom: 5,
+  },
+  initialsSelectorSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 10,
+  },
+  initialsSelectorContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  initialsSelectorButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  initialsSelectorButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginRight: 5,
+  },
+  initialsSelectorArrow: {
+    fontSize: 12,
+    color: '#666',
+  },
+  initialsDisplayRow: {
+    marginTop: 10,
+    marginBottom: 10,
+  },
+
+  /* New Initials Modal Styles */
+  initialsModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  initialsModalContainer: {
+    width: '85%',
+    maxWidth: 350,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  initialsModalHeader: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  initialsModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  initialsModalSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  initialsModalList: {
+    maxHeight: 300,
+    marginBottom: 24,
+  },
+  initialsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  initialsModalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    backgroundColor: '#f8f9fa',
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    width: '48%',
+  },
+  initialsModalOptionSelected: {
+    backgroundColor: '#fff',
+    borderColor: '#8A2BE2',
+  },
+  initialsModalOptionText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    flex: 1,
+  },
+  initialsModalOptionTextSelected: {
+    color: '#8A2BE2',
+  },
+  initialsModalCheckmark: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#8A2BE2',
+    marginLeft: 12,
+  },
+  initialsModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  initialsModalCancelButton: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    alignItems: 'center',
+  },
+  initialsModalCancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+  },
+  initialsModalConfirmButton: {
+    flex: 1,
+    backgroundColor: '#8A2BE2',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  initialsModalConfirmButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'white',
+  },
+
+  // Persistent Footer
+  footerContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#ffffff',
+    paddingTop: 8,
+    paddingBottom: 16,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#e9ecef',
+  },
+  footerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+
+  fabBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    zIndex: 998, // Below FAB actions but above other content
+  },
+  footerClearButton: {
+    flex: 1,
+    backgroundColor: '#ffd6d6',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginRight: 4,
+    minHeight: 40,
+  },
+  footerClearText: {
+    color: '#d64545',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  footerPrintButton: {
+    flex: 1,
+    backgroundColor: '#8A2BE2',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginLeft: 4,
+    minHeight: 40,
+  },
+  footerPrintText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  labelTypeRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  retryButton: {
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    padding: 12,
+    minWidth: 100,
+    minHeight: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  retryButtonText: {
+    color: '#333',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

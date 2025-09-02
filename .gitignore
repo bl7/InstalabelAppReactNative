@@ -140,3 +140,25 @@ pids
 
 # TernJS port file
 .tern-port
+
+# React Native specific additions
+# Metro bundler cache
+.metro-cache/
+
+# Flipper
+ios/Flipper/
+
+# Watchman
+.watchmanconfig
+
+# Temporary files
+*.tmp
+*.temp
+
+# IDE files
+.vscode/
+.idea/
+
+# OS generated files
+Thumbs.db
+ehthumbs.db

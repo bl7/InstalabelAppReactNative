@@ -4,7 +4,9 @@ import {
   HTTP_STATUS,
   INSTALABEL_ENV,
   INSTALABEL_API_ENDPOINTS,
+  ERROR_MESSAGES,
 } from '../config/env';
+import offlineManager from '../utils/offlineManager';
 
 // Types for API responses
 export interface LoginRequest {
@@ -12,11 +14,30 @@ export interface LoginRequest {
   password: string;
 }
 
+// Subscription types for InstaLabel.co API
+export interface SubscriptionInfo {
+  status: string;
+  planName: string | null;
+  isTrialing: boolean;
+  trialEnd: string | null;
+  cancelAt: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
 export interface LoginResponse {
   token: string;
   uuid: string;
   email: string;
   name: string;
+}
+
+export interface TokenValidationResponse {
+  valid: boolean;
+  user: {
+    id: string;
+    email: string;
+    name: string;
+  };
 }
 
 // Profile API types
@@ -90,12 +111,13 @@ export interface PrintQueueItem {
   name: string;
   type: 'ingredients' | 'menu';
   quantity: number;
-  labelType: 'cooked' | 'prep' | 'ppds' | 'use-first' | 'defrost';
+  labelType: 'cooked' | 'prep' | 'ppds' | 'use-first' | 'defrost' | 'default';
   expiryDate: string;
   allergens: string[];
   ingredients: string[]; // Add ingredients field to store ingredient names
   labelHeight: string;
   customExpiry?: string;
+  customInitials?: string; // Add custom initials for individual items
 }
 
 export interface ApiError {
@@ -123,12 +145,25 @@ export interface SubscriptionStatus {
   user_id: string;
   plan_id: string;
   plan_name: string;
-  status: 'active' | 'trialing' | 'canceled' | string;
-  trial_end?: string;
+  status:
+    | 'active'
+    | 'trialing'
+    | 'canceled'
+    | 'past_due'
+    | 'unpaid'
+    | 'incomplete'
+    | 'incomplete_expired';
+  cancel_at_period_end: boolean;
+  cancel_at: string | null;
+  trial_end: string | null;
+  amount: number;
+  billing_interval: 'month' | 'year';
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SubscriptionResponse {
-  subscription: SubscriptionStatus;
+  subscription: SubscriptionStatus | null;
 }
 
 export interface ActivityLog {
@@ -154,6 +189,11 @@ export interface PrintLabelLog {
   labelHeight: string;
   printerUsed: string;
   sessionId?: string;
+  selectedItems?: Array<{
+    id: string;
+    name: string;
+    expiryDays: number;
+  }>;
 }
 
 export interface LogRequest {
@@ -161,10 +201,47 @@ export interface LogRequest {
   details: PrintLabelLog | PrintLabelLog[];
 }
 
+// Print session grouping types
+export interface PrintLog {
+  id: number;
+  user_id: string;
+  action: string;
+  details: {
+    itemId: string;
+    itemName: string;
+    quantity: number;
+    labelType: 'cooked' | 'prep' | 'ppds' | 'defrost' | 'use_first';
+    printedAt: string;
+    expiryDate: string;
+    initial?: string;
+    labelHeight?: string;
+    printerUsed?: string;
+    sessionId?: string;
+    selectedItems?: Array<{
+      id: string;
+      name: string;
+      expiryDays: number;
+    }>;
+  };
+  timestamp: string;
+}
+
+export interface GroupedPrintSession {
+  sessionId: string;
+  timestamp: string;
+  printedAt: string;
+  items: PrintLog[];
+  printerUsed?: string;
+  initial?: string;
+  labelHeight?: string;
+}
+
 // API Service Class
 class ApiService {
   private baseURL: string;
   private accessToken: string | null = null;
+  // Handlers to notify the app about authentication/authorization failures (401/403)
+  private authErrorHandlers: Array<() => void> = [];
 
   constructor() {
     this.baseURL = ENV.API_BASE_URL;
@@ -199,22 +276,58 @@ class ApiService {
     }
 
     try {
-      // Make a simple request to test token validity
-      await this.request<{valid: boolean}>('/api/validate-token', {
+      await this.request<{valid: boolean}>(API_ENDPOINTS.AUTH.VALIDATE_TOKEN, {
         method: 'GET',
       });
       return true;
     } catch (error) {
-      if (ENV.ENABLE_LOGGING) {
-        console.log('❌ Token validation failed:', error);
-      }
+      console.warn('Token validation failed:', error);
       return false;
+    }
+  }
+
+  // Validate a specific token
+  async validateSpecificToken(token: string): Promise<TokenValidationResponse> {
+    try {
+      const response = await this.request<TokenValidationResponse>(
+        API_ENDPOINTS.AUTH.VALIDATE_TOKEN,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      return response;
+    } catch (error) {
+      console.error('Token validation failed:', error);
+      throw new Error(ERROR_MESSAGES.UNAUTHORIZED);
     }
   }
 
   // Clear access token
   clearAccessToken() {
     this.accessToken = null;
+  }
+
+  // Register a handler to be called on 401/403 responses
+  onAuthError(handler: () => void) {
+    this.authErrorHandlers.push(handler);
+  }
+
+  // Unregister a previously registered handler
+  offAuthError(handler: () => void) {
+    this.authErrorHandlers = this.authErrorHandlers.filter(h => h !== handler);
+  }
+
+  private notifyAuthError() {
+    try {
+      this.authErrorHandlers.forEach(h => {
+        try {
+          h();
+        } catch {}
+      });
+    } catch {}
   }
 
   // Generic HTTP request method
@@ -296,7 +409,7 @@ class ApiService {
       const responseData = await response.json();
 
       if (ENV.ENABLE_LOGGING) {
-        console.log(`📡 API Response:`, responseData);
+        // console.log(`📡 API Response:`, responseData);
       }
 
       // Handle HTTP errors
@@ -311,9 +424,13 @@ class ApiService {
         switch (response.status) {
           case HTTP_STATUS.UNAUTHORIZED:
             error.message = 'Invalid credentials or session expired';
+            // Proactively notify listeners to handle logout
+            this.notifyAuthError();
             break;
           case HTTP_STATUS.FORBIDDEN:
             error.message = 'Access denied';
+            // Notify as well; callers may choose to keep offline or logout
+            this.notifyAuthError();
             break;
           case HTTP_STATUS.NOT_FOUND:
             error.message = 'Resource not found';
@@ -356,59 +473,112 @@ class ApiService {
 
   // User authentication
   async login(credentials: LoginRequest): Promise<LoginResponse> {
-    return this.request<LoginResponse>('/api/auth/login', {
+    return this.request<LoginResponse>(API_ENDPOINTS.AUTH.LOGIN, {
       method: 'POST',
       body: JSON.stringify(credentials),
     });
   }
 
   async logout(): Promise<void> {
-    return this.request<void>('/api/auth/logout', {
+    return this.request<void>(API_ENDPOINTS.AUTH.LOGOUT, {
       method: 'POST',
     });
   }
 
   // New methods for labels system
   async getIngredients(): Promise<Ingredient[]> {
-    const response = await this.request<{message: string; data: Ingredient[]}>(
-      API_ENDPOINTS.INGREDIENTS.GET_ALL,
-      {
-        method: 'GET',
-      },
-    );
-    return response.data;
+    try {
+      // Check if online
+      if (offlineManager.isOnline()) {
+        const response = await this.request<{
+          message: string;
+          data: Ingredient[];
+        }>(API_ENDPOINTS.INGREDIENTS.GET_ALL, {
+          method: 'GET',
+        });
+
+        // Cache the fresh data
+        await offlineManager.cacheIngredients(response.data);
+        return response.data;
+      } else {
+        // Offline: return cached data
+        const cachedData = await offlineManager.getCachedIngredients();
+        if (cachedData) {
+          console.log('Using cached ingredients data (offline mode)');
+          return cachedData;
+        } else {
+          throw new Error('No cached ingredients data available');
+        }
+      }
+    } catch (error) {
+      // If online request fails, try cached data
+      if (offlineManager.isOnline()) {
+        console.log('Online request failed, trying cached data...');
+        const cachedData = await offlineManager.getCachedIngredients();
+        if (cachedData) {
+          return cachedData;
+        }
+      }
+      throw error;
+    }
   }
 
   async getMenuItems(): Promise<MenuItem[]> {
-    const response = await this.request<MenuItemsResponse>(
-      API_ENDPOINTS.MENU_ITEMS.GET_ALL,
-      {
-        method: 'GET',
-      },
-    );
+    try {
+      // Check if online
+      if (offlineManager.isOnline()) {
+        const response = await this.request<MenuItemsResponse>(
+          API_ENDPOINTS.MENU_ITEMS.GET_ALL,
+          {
+            method: 'GET',
+          },
+        );
 
-    if (response && response.data) {
-      const menuItems: MenuItem[] = [];
+        if (response && response.data) {
+          const menuItems: MenuItem[] = [];
 
-      // Extract items from all categories
-      response.data.forEach(category => {
-        if (category.items && Array.isArray(category.items)) {
-          category.items.forEach(item => {
-            menuItems.push({
-              menuItemID: item.menuItemID,
-              menuItemName: item.menuItemName,
-              expiryDays: item.expiryDays || 7,
-              ingredients: item.ingredients || [],
-              categoryName: category.categoryName,
-            });
+          // Extract items from all categories
+          response.data.forEach(category => {
+            if (category.items && Array.isArray(category.items)) {
+              category.items.forEach(item => {
+                menuItems.push({
+                  menuItemID: item.menuItemID,
+                  menuItemName: item.menuItemName,
+                  expiryDays: item.expiryDays || 7,
+                  ingredients: item.ingredients || [],
+                  categoryName: category.categoryName,
+                });
+              });
+            }
           });
+
+          // Cache the fresh data
+          await offlineManager.cacheMenuItems(menuItems);
+          return menuItems;
         }
-      });
 
-      return menuItems;
+        return [];
+      } else {
+        // Offline: return cached data
+        const cachedData = await offlineManager.getCachedMenuItems();
+        if (cachedData) {
+          console.log('Using cached menu items data (offline mode)');
+          return cachedData;
+        } else {
+          throw new Error('No cached menu items data available');
+        }
+      }
+    } catch (error) {
+      // If online request fails, try cached data
+      if (offlineManager.isOnline()) {
+        console.log('Online request failed, trying cached data...');
+        const cachedData = await offlineManager.getCachedMenuItems();
+        if (cachedData) {
+          return cachedData;
+        }
+      }
+      throw error;
     }
-
-    return [];
   }
 
   async getAllergens(): Promise<Allergen[]> {
@@ -564,6 +734,10 @@ class ApiService {
 
   // NEW: Subscription status using InstaLabel.co API
   async getSubscriptionStatus(): Promise<SubscriptionResponse> {
+    if (!this.accessToken) {
+      throw new Error('No access token available');
+    }
+
     const response = await this.request<SubscriptionResponse>(
       INSTALABEL_API_ENDPOINTS.SUBSCRIPTION.STATUS,
       {
@@ -624,7 +798,7 @@ class ApiService {
     }
   }
 
-  // Log print action
+  // Log print action with session ID
   async logPrintAction(labelData: {
     labelType: string;
     itemId: string;
@@ -635,6 +809,11 @@ class ApiService {
     labelHeight: string;
     printerUsed: string;
     sessionId?: string;
+    selectedItems?: Array<{
+      id: string;
+      name: string;
+      expiryDays: number;
+    }>;
   }): Promise<void> {
     try {
       const logData: PrintLabelLog = {
@@ -648,6 +827,7 @@ class ApiService {
         labelHeight: labelData.labelHeight,
         printerUsed: labelData.printerUsed,
         sessionId: labelData.sessionId,
+        selectedItems: labelData.selectedItems,
       };
 
       const logRequest: LogRequest = {
@@ -656,13 +836,156 @@ class ApiService {
       };
 
       await this.postActivityLog(logRequest);
-      console.log('Print action logged successfully');
+      console.log(
+        'Print action logged successfully with sessionId:',
+        labelData.sessionId,
+      );
     } catch (error) {
       console.error('Failed to log print action:', error);
       // Don't throw error - logging failure shouldn't stop printing
     }
   }
+
+  // Generate session ID for print sessions
+  generateSessionId(): string {
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 }
 
 // Export singleton instance
 export const apiService = new ApiService();
+
+// Subscription utility functions
+export const canUserPrint = (
+  subscription: SubscriptionStatus | null,
+): boolean => {
+  // No subscription = no printing
+  if (!subscription) {
+    return false;
+  }
+
+  // Only active and trialing subscriptions can print
+  return subscription.status === 'active' || subscription.status === 'trialing';
+};
+
+export const getBlockedMessage = (
+  subscription: SubscriptionStatus | null,
+): string => {
+  if (!subscription) {
+    return 'Printing is disabled. Please subscribe to a plan to enable printing.';
+  }
+
+  switch (subscription.status) {
+    case 'canceled':
+      return 'Printing is disabled. Your subscription has been canceled.';
+    case 'past_due':
+    case 'unpaid':
+      return 'Printing is disabled. Please update your payment method to continue printing.';
+    case 'incomplete':
+    case 'incomplete_expired':
+      return 'Printing is disabled. Please complete your subscription setup.';
+    default:
+      return 'Printing is disabled due to your subscription status.';
+  }
+};
+
+export const getSubscriptionInfo = (
+  subscription: SubscriptionStatus | null,
+): SubscriptionInfo => {
+  if (!subscription) {
+    return {
+      status: 'no_subscription',
+      planName: null,
+      isTrialing: false,
+      trialEnd: null,
+      cancelAt: null,
+      cancelAtPeriodEnd: false,
+    };
+  }
+
+  return {
+    status: subscription.status,
+    planName: subscription.plan_name,
+    isTrialing: subscription.status === 'trialing',
+    trialEnd: subscription.trial_end,
+    cancelAt: subscription.cancel_at,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+  };
+};
+
+// Print session grouping utilities
+export const groupPrintSessions = (
+  printLogs: PrintLog[],
+): GroupedPrintSession[] => {
+  if (printLogs.length === 0) return [];
+
+  const grouped: {[key: string]: PrintLog[]} = {};
+
+  // Group logs by sessionId
+  printLogs.forEach(log => {
+    const sessionKey =
+      log.details.sessionId ||
+      `${new Date(log.timestamp).getTime()}-${
+        log.details.printerUsed || 'unknown'
+      }`;
+
+    if (!grouped[sessionKey]) {
+      grouped[sessionKey] = [];
+    }
+    grouped[sessionKey].push(log);
+  });
+
+  // Convert to GroupedPrintSession array
+  const sessions: GroupedPrintSession[] = Object.entries(grouped).map(
+    ([sessionId, logs]) => {
+      const firstLog = logs[0];
+      return {
+        sessionId,
+        timestamp: firstLog.timestamp,
+        printedAt: firstLog.details.printedAt,
+        items: logs,
+        printerUsed:
+          typeof firstLog.details.printerUsed === 'string'
+            ? firstLog.details.printerUsed
+            : (firstLog.details.printerUsed as any)?.name || 'Unknown Printer',
+        initial: firstLog.details.initial,
+        labelHeight: firstLog.details.labelHeight,
+      };
+    },
+  );
+
+  // Sort by printedAt (newest first)
+  sessions.sort(
+    (a, b) => new Date(b.printedAt).getTime() - new Date(a.printedAt).getTime(),
+  );
+
+  return sessions;
+};
+
+export const getItemNames = (session: GroupedPrintSession): string => {
+  // If we have selectedItems in the first log, use those for more detailed info
+  const firstLog = session.items[0];
+  if (
+    firstLog.details.selectedItems &&
+    firstLog.details.selectedItems.length > 0
+  ) {
+    return firstLog.details.selectedItems.map(item => item.name).join(', ');
+  }
+
+  // Fallback to the original method
+  return session.items.map(item => item.details.itemName).join(', ');
+};
+
+export const getTotalQuantity = (session: GroupedPrintSession): number => {
+  return session.items.reduce(
+    (total, item) => total + item.details.quantity,
+    0,
+  );
+};
+
+export const getLabelTypes = (session: GroupedPrintSession): string => {
+  const types = Array.from(
+    new Set(session.items.map(item => item.details.labelType)),
+  );
+  return types.map(type => type.toUpperCase()).join(', ');
+};
