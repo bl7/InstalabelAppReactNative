@@ -67,6 +67,7 @@ const LabelTypeDropdown: React.FC<LabelTypeDropdownProps> = ({
         hasBackdrop={true}
         backdropTransitionInTiming={300}
         backdropTransitionOutTiming={300}
+        backdropPressToClose={true}
         deviceHeight={1000}
         deviceWidth={1000}
         hideModalContentWhileAnimating={false}
@@ -87,9 +88,8 @@ const LabelTypeDropdown: React.FC<LabelTypeDropdownProps> = ({
         useNativeDriver={true}
         useNativeDriverForBackdrop={true}
         backdropColor="rgba(0,0,0,0.5)"
-        customBackdrop={<View />}
         panResponderThreshold={0.5}
-        onBackButtonPress={() => {}}>
+        onBackButtonPress={() => setIsVisible(false)}>
         <View style={styles.modalContent}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Select Label Type</Text>

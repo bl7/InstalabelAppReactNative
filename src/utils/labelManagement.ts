@@ -6,9 +6,11 @@ export type LabelType =
   | 'cooked'
   | 'prep'
   | 'ppds'
+  | 'ppd'
   | 'use-first'
   | 'defrost'
-  | 'default';
+  | 'default'
+  | 'etc';
 export type LabelHeight = '31mm' | '40mm' | '56mm' | '80mm';
 
 // Label type configuration
@@ -57,6 +59,28 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     showPrintedDate: false,
     showIngredients: true,
     showAllergens: true,
+    specialIndicators: [],
+  },
+  ppd: {
+    type: 'ppd',
+    name: 'PPD',
+    description: 'Pre-Packaged for Direct Sale (simplified)',
+    defaultExpiryDays: 5,
+    format: 'best-before',
+    showPrintedDate: false,
+    showIngredients: true,
+    showAllergens: true,
+    specialIndicators: ['(PPD)'],
+  },
+  etc: {
+    type: 'etc',
+    name: 'ETC',
+    description: 'Custom label with user-defined contains text',
+    defaultExpiryDays: 7,
+    format: 'expires',
+    showPrintedDate: true,
+    showIngredients: true,
+    showAllergens: false,
     specialIndicators: [],
   },
   'use-first': {

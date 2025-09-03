@@ -111,7 +111,15 @@ export interface PrintQueueItem {
   name: string;
   type: 'ingredients' | 'menu';
   quantity: number;
-  labelType: 'cooked' | 'prep' | 'ppds' | 'use-first' | 'defrost' | 'default';
+  labelType:
+    | 'cooked'
+    | 'prep'
+    | 'ppds'
+    | 'ppd'
+    | 'use-first'
+    | 'defrost'
+    | 'default'
+    | 'etc';
   expiryDate: string;
   allergens: string[];
   ingredients: string[]; // Add ingredients field to store ingredient names
@@ -234,6 +242,66 @@ export interface GroupedPrintSession {
   printerUsed?: string;
   initial?: string;
   labelHeight?: string;
+}
+
+// Bulk Print API Types
+export interface BulkPrintList {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  item_count?: number;
+}
+
+export interface BulkPrintItem {
+  id: string;
+  list_id: string;
+  item_id: string;
+  item_type: 'ingredient' | 'menu';
+  item_name: string;
+  quantity: number;
+  label_type: string | null;
+  created_at: string;
+}
+
+export interface BulkPrintListsResponse {
+  lists: BulkPrintList[];
+}
+
+export interface BulkPrintListResponse {
+  list: BulkPrintList;
+  items?: BulkPrintItem[];
+}
+
+export interface BulkPrintItemsResponse {
+  items: BulkPrintItem[];
+}
+
+export interface CreateBulkPrintListRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateBulkPrintListRequest {
+  name?: string;
+  description?: string;
+}
+
+export interface AddBulkPrintItemsRequest {
+  items: {
+    item_id: string;
+    item_type: 'ingredient' | 'menu';
+    item_name: string;
+    quantity?: number;
+    label_type?: string;
+  }[];
+}
+
+export interface UpdateBulkPrintItemRequest {
+  quantity?: number;
+  label_type?: string;
 }
 
 // API Service Class
@@ -749,7 +817,12 @@ class ApiService {
   }
 
   // NEW: Activity logs using InstaLabel.co API
-  async getActivityLogs(): Promise<LogsResponse> {
+  async getActivityLogs(params?: {
+    page?: number;
+    limit?: number;
+    dateFrom?: string;
+    action?: string;
+  }): Promise<LogsResponse> {
     // Debug: Log the current token state
     if (ENV.ENABLE_LOGGING) {
       console.log('🔍 getActivityLogs - Current token state:');
@@ -764,8 +837,19 @@ class ApiService {
       );
     }
 
+    // Build query parameters
+    const queryParams = new URLSearchParams();
+    if (params?.page) queryParams.append('page', params.page.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+    if (params?.dateFrom) queryParams.append('dateFrom', params.dateFrom);
+    if (params?.action) queryParams.append('action', params.action);
+
+    const endpoint =
+      INSTALABEL_API_ENDPOINTS.LOGS.GET +
+      (queryParams.toString() ? `?${queryParams.toString()}` : '');
+
     const response = await this.request<LogsResponse>(
-      INSTALABEL_API_ENDPOINTS.LOGS.GET,
+      endpoint,
       {
         method: 'GET',
       },
@@ -849,6 +933,125 @@ class ApiService {
   // Generate session ID for print sessions
   generateSessionId(): string {
     return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  // Bulk Print API Methods
+  async getBulkPrintLists(): Promise<BulkPrintListsResponse> {
+    const response = await this.request<BulkPrintListsResponse>(
+      INSTALABEL_API_ENDPOINTS.BULK_PRINT.LISTS.GET_ALL,
+      {
+        method: 'GET',
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async createBulkPrintList(
+    request: CreateBulkPrintListRequest,
+  ): Promise<BulkPrintListResponse> {
+    const response = await this.request<BulkPrintListResponse>(
+      INSTALABEL_API_ENDPOINTS.BULK_PRINT.LISTS.CREATE,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async getBulkPrintList(listId: string): Promise<BulkPrintListResponse> {
+    const response = await this.request<BulkPrintListResponse>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.LISTS.GET_BY_ID}/${listId}`,
+      {
+        method: 'GET',
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async updateBulkPrintList(
+    listId: string,
+    request: UpdateBulkPrintListRequest,
+  ): Promise<BulkPrintListResponse> {
+    const response = await this.request<BulkPrintListResponse>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.LISTS.UPDATE}/${listId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(request),
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async deleteBulkPrintList(listId: string): Promise<{message: string}> {
+    const response = await this.request<{message: string}>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.LISTS.DELETE}/${listId}`,
+      {
+        method: 'DELETE',
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async getBulkPrintListItems(listId: string): Promise<BulkPrintItemsResponse> {
+    const response = await this.request<BulkPrintItemsResponse>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.ITEMS.GET_BY_LIST}/${listId}/items`,
+      {
+        method: 'GET',
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async addBulkPrintItems(
+    listId: string,
+    request: AddBulkPrintItemsRequest,
+  ): Promise<BulkPrintItemsResponse> {
+    const response = await this.request<BulkPrintItemsResponse>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.ITEMS.ADD_TO_LIST}/${listId}/items`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request),
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async updateBulkPrintItem(
+    listId: string,
+    itemId: string,
+    request: UpdateBulkPrintItemRequest,
+  ): Promise<{item: BulkPrintItem}> {
+    const response = await this.request<{item: BulkPrintItem}>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.ITEMS.UPDATE_ITEM}/${listId}/items/${itemId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(request),
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
+  }
+
+  async deleteBulkPrintItem(
+    listId: string,
+    itemId: string,
+  ): Promise<{message: string}> {
+    const response = await this.request<{message: string}>(
+      `${INSTALABEL_API_ENDPOINTS.BULK_PRINT.ITEMS.DELETE_ITEM}/${listId}/items/${itemId}`,
+      {
+        method: 'DELETE',
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+    return response;
   }
 }
 

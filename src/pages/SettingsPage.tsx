@@ -13,13 +13,8 @@ import {
 } from 'react-native';
 import {
   Bluetooth,
-  Bug,
   Settings,
   RefreshCw,
-  Save,
-  Edit3,
-  X,
-  Plus,
   LogOut,
   Wifi,
   WifiOff,
@@ -87,18 +82,6 @@ const SettingsPage: React.FC = () => {
   const [useInitials, setUseInitials] = useState(true);
   const [availableInitials, setAvailableInitials] = useState<string[]>(['NG']);
   const [isLoadingInitials, setIsLoadingInitials] = useState(false);
-
-  // Editing states
-  const [isEditingSettings, setIsEditingSettings] = useState(false);
-  const [isEditingInitials, setIsEditingInitials] = useState(false);
-  const [editingSettings, setEditingSettings] = useState<
-    Record<string, number>
-  >({});
-  const [editingInitials, setEditingInitials] = useState<string[]>([]);
-  const [editingUseInitials, setEditingUseInitials] = useState(true);
-  const [newInitial, setNewInitial] = useState('');
-  const [isUpdatingSettings, setIsUpdatingSettings] = useState(false);
-  const [isUpdatingInitials, setIsUpdatingInitials] = useState(false);
 
   // Load label settings from InstaLabel.co API
   const loadLabelSettings = useCallback(async () => {
@@ -179,127 +162,6 @@ const SettingsPage: React.FC = () => {
     }
   }, [isAuthenticated]);
 
-  // Update label settings
-  const updateLabelSettings = useCallback(async () => {
-    if (!isAuthenticated || !editingSettings) return;
-
-    if (!user?.id) {
-      showToast.error('Error', 'User ID not found');
-      return;
-    }
-
-    setIsUpdatingSettings(true);
-    try {
-      const settingsArray = Object.entries(editingSettings).map(
-        ([labelType, expiryDays]) => ({
-          label_type: labelType,
-          expiry_days: expiryDays,
-        }),
-      );
-
-      const response = await apiService.updateLabelSettings(
-        user.id,
-        settingsArray,
-      );
-
-      if (response.success) {
-        setLabelSettings(editingSettings);
-        setIsEditingSettings(false);
-        showToast.success('Success', 'Label settings updated successfully');
-      } else {
-        showToast.error(
-          'Error',
-          response.message || 'Failed to update label settings',
-        );
-      }
-    } catch (error) {
-      console.error('Error updating label settings:', error);
-      showToast.error('Error', 'Failed to update label settings');
-    } finally {
-      setIsUpdatingSettings(false);
-    }
-  }, [isAuthenticated, editingSettings, user]);
-
-  // Update label initials
-  const updateLabelInitials = useCallback(async () => {
-    if (!isAuthenticated) return;
-
-    if (!user?.id) {
-      showToast.error('Error', 'User ID not found');
-      return;
-    }
-
-    setIsUpdatingInitials(true);
-    try {
-      const response = await apiService.updateLabelInitials(
-        user.id,
-        editingUseInitials,
-        editingInitials,
-      );
-
-      if (response.success) {
-        setUseInitials(editingUseInitials);
-        setAvailableInitials(editingInitials);
-        setIsEditingInitials(false);
-        showToast.success('Success', 'Label initials updated successfully');
-      } else {
-        showToast.error(
-          'Error',
-          response.message || 'Failed to update label initials',
-        );
-      }
-    } catch (error) {
-      console.error('Error updating label initials:', error);
-      showToast.error('Error', 'Failed to update label initials');
-    } finally {
-      setIsUpdatingInitials(false);
-    }
-  }, [isAuthenticated, editingUseInitials, editingInitials, user]);
-
-  // Helper functions for editing
-  const startEditingSettings = useCallback(() => {
-    setEditingSettings({...labelSettings});
-    setIsEditingSettings(true);
-  }, [labelSettings]);
-
-  const cancelEditingSettings = useCallback(() => {
-    setIsEditingSettings(false);
-    setEditingSettings({});
-  }, []);
-
-  const startEditingInitials = useCallback(() => {
-    setEditingInitials([...availableInitials]);
-    setEditingUseInitials(useInitials);
-    setIsEditingInitials(true);
-  }, [availableInitials, useInitials]);
-
-  const cancelEditingInitials = useCallback(() => {
-    setIsEditingInitials(false);
-    setEditingInitials([]);
-    setEditingUseInitials(true);
-  }, []);
-
-  const addInitial = useCallback(() => {
-    if (
-      newInitial.trim() &&
-      !editingInitials.includes(newInitial.trim().toUpperCase())
-    ) {
-      setEditingInitials([...editingInitials, newInitial.trim().toUpperCase()]);
-      setNewInitial('');
-    }
-  }, [newInitial, editingInitials]);
-
-  const removeInitial = useCallback(
-    (index: number) => {
-      setEditingInitials(editingInitials.filter((_, i) => i !== index));
-    },
-    [editingInitials],
-  );
-
-  const toggleUseInitials = useCallback(() => {
-    setEditingUseInitials(!editingUseInitials);
-  }, [editingUseInitials]);
-
   // Request necessary permissions for Android 12+
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -367,23 +229,6 @@ const SettingsPage: React.FC = () => {
     } catch (error) {
       console.error('Error disconnecting device:', error);
       showToast.error('Error', 'Failed to disconnect device');
-    }
-  };
-
-  const handleDebugConnection = async () => {
-    try {
-      const status = await getConnectionStatus();
-      if (status) {
-        showToast.info(
-          'Connection Debug Info',
-          `Type: ${status.type}\nConnected: ${status.connected}\nClassic: ${status.classicConnected}\nBLE: ${status.bleConnected}`,
-        );
-      } else {
-        showToast.error('Debug Info', 'Failed to get connection status');
-      }
-    } catch (error) {
-      console.error('Error getting debug info:', error);
-      showToast.error('Error', 'Failed to get debug info');
     }
   };
 
@@ -552,14 +397,6 @@ const SettingsPage: React.FC = () => {
               </Text>
             </View>
           </View>
-
-          {/* Debug Button */}
-          <TouchableOpacity
-            style={[styles.button, styles.debugButton]}
-            onPress={handleDebugConnection}>
-            <Bug size={20} color="white" />
-            <Text style={styles.buttonText}>Debug Connection</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Subscription Status Section */}
@@ -669,14 +506,6 @@ const SettingsPage: React.FC = () => {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Label Settings</Text>
-            {!isEditingSettings && (
-              <TouchableOpacity
-                style={styles.editButton}
-                onPress={startEditingSettings}>
-                <Edit3 size={16} color="white" />
-                <Text style={styles.editButtonText}>Edit</Text>
-              </TouchableOpacity>
-            )}
           </View>
 
           {/* Show current label settings from API */}
@@ -688,52 +517,6 @@ const SettingsPage: React.FC = () => {
                   <Text style={styles.settingValue}>{expiryDays} days</Text>
                 </View>
               ))}
-            </View>
-          )}
-
-          {/* Editing Interface for Label Settings */}
-          {isEditingSettings && (
-            <View style={styles.editingContainer}>
-              <Text style={styles.currentSettingsTitle}>
-                Edit Label Settings:
-              </Text>
-              {Object.entries(editingSettings).map(
-                ([labelType, expiryDays]) => (
-                  <View key={labelType} style={styles.editingRow}>
-                    <Text style={styles.settingLabel}>{labelType}:</Text>
-                    <TextInput
-                      style={styles.editingInput}
-                      value={expiryDays.toString()}
-                      onChangeText={(text: string) => {
-                        const numValue = parseInt(text) || 0;
-                        setEditingSettings({
-                          ...editingSettings,
-                          [labelType]: numValue,
-                        });
-                      }}
-                      keyboardType="numeric"
-                      placeholder="Days"
-                    />
-                  </View>
-                ),
-              )}
-              <View style={styles.actionButtons}>
-                <TouchableOpacity
-                  style={styles.saveButton}
-                  onPress={updateLabelSettings}
-                  disabled={isUpdatingSettings}>
-                  <Save size={16} color="white" />
-                  <Text style={styles.saveButtonText}>
-                    {isUpdatingSettings ? 'Saving...' : 'Save'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={cancelEditingSettings}>
-                  <X size={16} color="white" />
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
             </View>
           )}
 
@@ -769,14 +552,6 @@ const SettingsPage: React.FC = () => {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Label Initials</Text>
-            {!isEditingInitials && (
-              <TouchableOpacity
-                style={styles.editButton}
-                onPress={startEditingInitials}>
-                <Edit3 size={16} color="white" />
-                <Text style={styles.editButtonText}>Edit</Text>
-              </TouchableOpacity>
-            )}
           </View>
 
           {/* Show current initials status */}
@@ -800,89 +575,6 @@ const SettingsPage: React.FC = () => {
                   </Text>
                 </View>
               )}
-            </View>
-          )}
-
-          {/* Editing Interface for Initials */}
-          {isEditingInitials && (
-            <View style={styles.editingContainer}>
-              <Text style={styles.currentSettingsTitle}>
-                Edit Initials Settings:
-              </Text>
-
-              {/* Toggle for use initials */}
-              <View style={styles.toggleContainer}>
-                <Text style={styles.settingLabel}>Use Initials:</Text>
-                <TouchableOpacity
-                  style={[
-                    styles.toggleButton,
-                    !editingUseInitials && styles.toggleButtonInactive,
-                  ]}
-                  onPress={toggleUseInitials}>
-                  <Text
-                    style={[
-                      styles.toggleButtonText,
-                      !editingUseInitials && styles.toggleButtonTextInactive,
-                    ]}>
-                    {editingUseInitials ? 'ON' : 'OFF'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Initials list */}
-              {editingUseInitials && (
-                <>
-                  <Text style={styles.settingLabel}>Available Initials:</Text>
-                  <View style={styles.initialsContainer}>
-                    {editingInitials.map((initial, index) => (
-                      <View key={index} style={styles.initialTag}>
-                        <Text style={styles.initialTagText}>{initial}</Text>
-                        <TouchableOpacity
-                          style={styles.removeInitialButton}
-                          onPress={() => removeInitial(index)}>
-                          <X size={12} color="white" />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </View>
-
-                  {/* Add new initial */}
-                  <View style={styles.addInitialContainer}>
-                    <TextInput
-                      style={styles.addInitialInput}
-                      value={newInitial}
-                      onChangeText={setNewInitial}
-                      placeholder="Enter initials (e.g., AB)"
-                      maxLength={4}
-                    />
-                    <TouchableOpacity
-                      style={styles.addInitialButton}
-                      onPress={addInitial}>
-                      <Plus size={16} color="white" />
-                      <Text style={styles.addInitialButtonText}>Add</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-
-              {/* Action buttons */}
-              <View style={styles.actionButtons}>
-                <TouchableOpacity
-                  style={styles.saveButton}
-                  onPress={updateLabelInitials}
-                  disabled={isUpdatingInitials}>
-                  <Save size={16} color="white" />
-                  <Text style={styles.saveButtonText}>
-                    {isUpdatingInitials ? 'Saving...' : 'Save'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={cancelEditingInitials}>
-                  <X size={16} color="white" />
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
             </View>
           )}
 
@@ -1250,74 +942,7 @@ const styles = StyleSheet.create({
     // This style is applied when the icon is rotating
     // It's not directly in the styles object, but can be added via a class or inline
   },
-  // New styles for editing functionality
-  editButton: {
-    backgroundColor: '#8A2BE2',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    minHeight: 36,
-  },
-  editButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  saveButton: {
-    backgroundColor: '#4CAF50',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  saveButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  cancelButton: {
-    backgroundColor: '#F44336',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  cancelButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  editingContainer: {
-    backgroundColor: '#F8F9FA',
-    padding: 15,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E9ECEF',
-    marginTop: 10,
-  },
-  editingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  editingInput: {
-    borderWidth: 1,
-    borderColor: '#DEE2E6',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-    backgroundColor: 'white',
-    minWidth: 80,
-  },
+
   initialsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',

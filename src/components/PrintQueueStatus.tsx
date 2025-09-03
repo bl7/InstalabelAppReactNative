@@ -113,6 +113,9 @@ const styles = StyleSheet.create({
     borderTopColor: '#e0e0e0',
     paddingHorizontal: 16,
     paddingVertical: 8,
+    paddingRight: 90, // Add right padding to avoid FAB interference
+    marginLeft: 0, // Ensure no left margin
+    paddingLeft: 16, // Keep left padding consistent
   },
   statusBar: {
     flexDirection: 'row',

@@ -1045,6 +1045,9 @@ const LabelsPage: React.FC = () => {
     try {
       setIsLoadingPrint(true);
 
+      // Generate session ID for this print job
+      const sessionId = apiService.generateSessionId();
+
       // Use TSPL direct printing instead of image capture
       await printTSPLLabels(
         printQueue,
@@ -1052,7 +1055,9 @@ const LabelsPage: React.FC = () => {
         menuItems,
         customExpiry,
         useInitials ? initials : '',
+        undefined, // storageInstructions
         companyName,
+        sessionId, // Pass session ID for logging
       );
 
       showToast.success(
@@ -1332,15 +1337,18 @@ const LabelsPage: React.FC = () => {
                             <LabelTypeDropdown
                               value={
                                 queueItem
-                                  ? queueItem.labelType === 'ppds'
-                                    ? 'default'
-                                    : (queueItem.labelType as any)
+                                  ? (queueItem.labelType as any)
                                   : 'default'
                               }
                               onValueChange={newType =>
                                 handleUpdateLabelTypeInline(item, newType)
                               }
-                              availableTypes={['default', 'cooked', 'prep']}
+                              availableTypes={[
+                                'default',
+                                'cooked',
+                                'prep',
+                                'ppds',
+                              ]}
                             />
                           </View>
                         </View>

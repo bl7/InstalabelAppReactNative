@@ -12,6 +12,8 @@ import {
   generatePPDSLabel,
   generateIngredientLabel,
   generateMenuItemLabel,
+  generatePPDLabel,
+  generateETCLabel,
 } from '../tsplUtils';
 import {generateTSCLabelContent} from './utils/labelManagement';
 import PrintSpooler, {PrintJob} from './services/printSpooler';
@@ -78,6 +80,7 @@ interface PrinterContextType {
     initials: string,
     storageInstructions?: string,
     companyName?: string,
+    sessionId?: string,
   ) => Promise<void>;
 
   // Spooler functions
@@ -409,6 +412,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     initials: string,
     storageInstructions?: string,
     companyName?: string,
+    sessionId?: string, // Optional session ID for logging
   ) => {
     if (!connectedDevice) {
       throw new Error('No device connected');
@@ -490,6 +494,72 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           };
           console.log('🔍 PPDS Label Data:', ppdsLabelData);
           tsplCommands = generatePPDSLabel(ppdsLabelData);
+        } else if (item.labelType === 'ppd') {
+          // Use specialized PPD label function for custom format
+          console.log('🔍 Using generatePPDLabel for PPD label:', item.name);
+
+          // Find the menu item object from the menuItems array
+          const menuItem = menuItems.find(
+            menu => menu.menuItemName === item.name || menu.name === item.name,
+          );
+          if (menuItem) {
+            console.log('✅ Found menu item object for PPD:', menuItem);
+
+            // Pass the expiry date from the print queue item (prioritize custom expiry)
+            const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+            console.log('🔍 Calling generatePPDLabel with:', {
+              menuItem: menuItem,
+              expiryDate: finalExpiryDate,
+              config: {dpi: 203},
+            });
+
+            tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
+              dpi: 203,
+            });
+          } else {
+            // Fallback to standard label if menu item not found
+            console.warn(
+              `⚠️ Menu item not found for PPD label ${item.name}, using fallback`,
+            );
+            tsplCommands = generateDirectTSPLLabel(labelData);
+          }
+        } else if (item.labelType === 'etc') {
+          // Use specialized ETC label function for custom contains text
+          console.log('🔍 Using generateETCLabel for ETC label:', item.name);
+
+          // Find the menu item object from the menuItems array
+          const menuItem = menuItems.find(
+            menu => menu.menuItemName === item.name || menu.name === item.name,
+          );
+          if (menuItem) {
+            console.log('✅ Found menu item object for ETC:', menuItem);
+
+            // Pass the expiry date from the print queue item (prioritize custom expiry)
+            const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+            console.log('🔍 Calling generateETCLabel with:', {
+              menuItem: menuItem,
+              expiryDate: finalExpiryDate,
+              config: {dpi: 203},
+              initials: item.customInitials || initials,
+              customContains: item.ingredients?.join(', '),
+            });
+
+            tsplCommands = generateETCLabel(
+              menuItem,
+              finalExpiryDate,
+              {
+                dpi: 203,
+              },
+              item.customInitials || initials,
+              item.ingredients?.join(', '),
+            );
+          } else {
+            // Fallback to standard label if menu item not found
+            console.warn(
+              `⚠️ Menu item not found for ETC label ${item.name}, using fallback`,
+            );
+            tsplCommands = generateDirectTSPLLabel(labelData);
+          }
         } else if (item.type === 'ingredients') {
           // Use generateIngredientLabel for ingredient labels (our improved function)
           console.log(
@@ -518,70 +588,106 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             tsplCommands = generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'menu') {
-          // Use generateMenuItemLabel for menu item labels (our improved function)
-          console.log(
-            '🍽️ Using generateMenuItemLabel for menu item:',
-            item.name,
-          );
-          console.log('🔍 Item details:', {
-            name: item.name,
-            type: item.type,
-            labelType: item.labelType,
-            expiryDate: item.expiryDate,
-            ingredients: item.ingredients,
-            allergens: item.allergens,
-          });
-
-          // Find the menu item object from the menuItems array
-          const menuItem = menuItems.find(
-            menu => menu.menuItemName === item.name || menu.name === item.name,
-          );
-          if (menuItem) {
-            console.log('✅ Found menu item object:', menuItem);
-            console.log('🔍 Menu item details:', {
-              menuItemName: menuItem.menuItemName,
-              name: menuItem.name,
-              allergens: menuItem.allergens,
-              ingredients: menuItem.ingredients,
-            });
-
-            // Add the label type from the item
-            menuItem.labelType = item.labelType || 'PREP';
-            // Add the full ingredients array for allergen lookup
-            // Filter ingredients to only include those used in this menu item
-            const menuItemIngredients = ingredients.filter((ing: any) =>
-              item.ingredients.includes(ing.ingredientName),
+          // Check if this is a PPDS label type from Labels page (should print as PPD)
+          if (item.labelType === 'ppds') {
+            console.log(
+              '🔍 PPDS label type from Labels page, using PPD format:',
+              item.name,
             );
-            menuItem.fullIngredients = menuItemIngredients;
-            console.log('🔍 Added fullIngredients:', {
-              count: menuItemIngredients?.length,
-              sample: menuItemIngredients?.slice(0, 3),
-              allIngredients: ingredients?.length,
-              menuItemIngredients: item.ingredients,
-            });
 
-            // Pass the expiry date from the print queue item (prioritize custom expiry)
-            const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
-            console.log('🔍 Calling generateMenuItemLabel with:', {
-              menuItem: menuItem,
-              expiryDate: finalExpiryDate,
-              config: {dpi: 203},
-            });
+            // Find the menu item object from the menuItems array
+            const menuItem = menuItems.find(
+              menu =>
+                menu.menuItemName === item.name || menu.name === item.name,
+            );
+            if (menuItem) {
+              console.log('✅ Found menu item object for PPDS->PPD:', menuItem);
 
-            tsplCommands = generateMenuItemLabel(
-              menuItem,
-              finalExpiryDate,
-              {
+              // Pass the expiry date from the print queue item (prioritize custom expiry)
+              const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+              console.log('🔍 Calling generatePPDLabel for PPDS->PPD with:', {
+                menuItem: menuItem,
+                expiryDate: finalExpiryDate,
+                config: {dpi: 203},
+              });
+
+              tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
                 dpi: 203,
-              },
-              item.customInitials || initials,
-            );
+              });
+            } else {
+              // Fallback to standard label if menu item not found
+              console.warn(
+                `⚠️ Menu item not found for PPDS->PPD label ${item.name}, using fallback`,
+              );
+              tsplCommands = generateDirectTSPLLabel(labelData);
+            }
           } else {
-            // Fallback to standard label if menu item not found
-            console.warn(
-              `⚠️ Menu item not found for ${item.name}, using fallback`,
+            // Use generateMenuItemLabel for regular menu item labels (our improved function)
+            console.log(
+              '🍽️ Using generateMenuItemLabel for menu item:',
+              item.name,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            console.log('🔍 Item details:', {
+              name: item.name,
+              type: item.type,
+              labelType: item.labelType,
+              expiryDate: item.expiryDate,
+              ingredients: item.ingredients,
+              allergens: item.allergens,
+            });
+
+            // Find the menu item object from the menuItems array
+            const menuItem = menuItems.find(
+              menu =>
+                menu.menuItemName === item.name || menu.name === item.name,
+            );
+            if (menuItem) {
+              console.log('✅ Found menu item object:', menuItem);
+              console.log('🔍 Menu item details:', {
+                menuItemName: menuItem.menuItemName,
+                name: menuItem.name,
+                allergens: menuItem.allergens,
+                ingredients: menuItem.ingredients,
+              });
+
+              // Add the label type from the item
+              menuItem.labelType = item.labelType || 'PREP';
+              // Add the full ingredients array for allergen lookup
+              // Filter ingredients to only include those used in this menu item
+              const menuItemIngredients = ingredients.filter((ing: any) =>
+                item.ingredients.includes(ing.ingredientName),
+              );
+              menuItem.fullIngredients = menuItemIngredients;
+              console.log('🔍 Added fullIngredients:', {
+                count: menuItemIngredients?.length,
+                sample: menuItemIngredients?.slice(0, 3),
+                allIngredients: ingredients?.length,
+                menuItemIngredients: item.ingredients,
+              });
+
+              // Pass the expiry date from the print queue item (prioritize custom expiry)
+              const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+              console.log('🔍 Calling generateMenuItemLabel with:', {
+                menuItem: menuItem,
+                expiryDate: finalExpiryDate,
+                config: {dpi: 203},
+              });
+
+              tsplCommands = generateMenuItemLabel(
+                menuItem,
+                finalExpiryDate,
+                {
+                  dpi: 203,
+                },
+                item.customInitials || initials,
+              );
+            } else {
+              // Fallback to standard label if menu item not found
+              console.warn(
+                `⚠️ Menu item not found for ${item.name}, using fallback`,
+              );
+              tsplCommands = generateDirectTSPLLabel(labelData);
+            }
           }
         } else {
           // Use standard label function for other label types
@@ -606,6 +712,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
         // Log the print action to backend for tracking/auditing
         try {
+          const logSessionId = sessionId || apiService.generateSessionId();
           await apiService.logPrintAction({
             labelType: item.labelType || 'prep',
             itemId: item.uid || item.id || '',
@@ -615,11 +722,13 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             initial: item.customInitials || initials,
             labelHeight: item.labelType === 'ppds' ? '80mm' : '40mm',
             printerUsed: connectedDevice.name || 'Bluetooth Printer',
-            sessionId: apiService.generateSessionId(),
+            sessionId: logSessionId,
             selectedItems:
               item.type === 'complex' ? item.selectedItems : undefined,
           });
-          console.log(`✅ Print action logged to backend for ${item.name}`);
+          console.log(
+            `✅ Print action logged to backend for ${item.name} with sessionId: ${logSessionId}`,
+          );
         } catch (logError) {
           console.warn(
             `⚠️ Failed to log print action for ${item.name}:`,
@@ -876,7 +985,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
       const labelContent = generateTSCLabelContent(
         text,
-        'custom',
+        'default',
         expiryDate,
         ingredients || [],
         allergens || [],

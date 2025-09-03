@@ -499,6 +499,9 @@ const PPDSPage: React.FC = () => {
         sampleItem: printQueue[0],
       });
 
+      // Generate session ID for this print job
+      const sessionId = apiService.generateSessionId();
+
       // Use TSPL direct printing instead of image capture
       await printTSPLLabels(
         printQueue,
@@ -508,6 +511,7 @@ const PPDSPage: React.FC = () => {
         '', // No initials for PPDS
         storageInstructions, // Pass storage instructions
         companyName, // Pass company name for "Prepared by" line
+        sessionId, // Pass session ID for logging
       );
 
       showToast.success(

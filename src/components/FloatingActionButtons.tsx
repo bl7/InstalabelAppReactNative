@@ -20,6 +20,7 @@ import {
   SearchX,
   Check,
   AlertTriangle,
+  Edit3,
 } from 'lucide-react-native';
 import {usePrinter} from '../PrinterContext';
 import {useSubscription} from '../contexts/SubscriptionContext';
@@ -30,11 +31,13 @@ import LoadingSpinner from './LoadingSpinner';
 interface FloatingActionButtonsProps {
   onDefrostPress?: () => void;
   onActionsToggle?: (showActions: boolean) => void;
+  onNavigateToCustom?: () => void;
 }
 
 const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
   onDefrostPress,
   onActionsToggle,
+  onNavigateToCustom,
 }) => {
   const [useFirstModalVisible, setUseFirstModalVisible] = useState(false);
   const [defrostModalVisible, setDefrostModalVisible] = useState(false);
@@ -352,19 +355,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
         }
       }
 
-      // Log the print session - what was actually selected and printed
-      await apiService.logPrintAction({
-        labelType: 'use_first',
-        itemId: `use-first-session-${Date.now()}`,
-        itemName: 'USE FIRST',
-        quantity: numQuantity,
-        expiryDate: new Date(
-          Date.now() + 7 * 24 * 60 * 60 * 1000,
-        ).toISOString(), // 7 days default
-        labelHeight: '40mm', // Default height for USE FIRST labels
-        printerUsed: connectedDevice.name || 'Unknown Printer',
-        sessionId: sessionId,
-      });
+      // Use First labels are utility labels - no need to log them
 
       Alert.alert(
         'Success',
@@ -396,18 +387,6 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
 
   return (
     <>
-      {/* Subscription Status Indicator */}
-      {!canPrint && (
-        <View style={styles.subscriptionWarning}>
-          <AlertTriangle size={16} color="#FF6B35" />
-          <Text style={styles.subscriptionWarningText}>
-            {subscriptionInfo.planName
-              ? `${subscriptionInfo.planName} Plan`
-              : 'No Subscription'}
-          </Text>
-        </View>
-      )}
-
       {/* Backdrop overlay when actions are shown */}
       {showActions && !keyboardVisible && (
         <TouchableOpacity
@@ -487,6 +466,36 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
                       !canPrint && styles.fabTextDisabled,
                     ]}>
                     DEFROST
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.fab,
+                  styles.actionFab,
+                  styles.etcFab,
+                  !canPrint && styles.fabDisabled,
+                ]}
+                onPress={() => {
+                  setShowActions(false);
+                  onNavigateToCustom?.();
+                }}
+                hitSlop={{top: 12, bottom: 12, left: 12, right: 12}}
+                disabled={!canPrint}
+                accessibilityRole="button"
+                accessibilityLabel="Open Custom Label"
+                accessibilityHint="Opens custom label creation page"
+                accessibilityState={{disabled: !canPrint}}
+                activeOpacity={canPrint ? 0.8 : 1}>
+                <View style={styles.fabContent}>
+                  <Edit3 size={20} color={canPrint ? '#fff' : '#ccc'} />
+                  <Text
+                    style={[
+                      styles.fabText,
+                      !canPrint && styles.fabTextDisabled,
+                    ]}>
+                    ETC
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -875,19 +884,24 @@ const styles = StyleSheet.create({
   defrostFab: {
     backgroundColor: '#00BCD4', // Teal/cyan - complements purple theme
   },
+  etcFab: {
+    backgroundColor: '#FF9800', // Orange - complements purple theme
+  },
   mainFab: {
     width: 56,
     height: 56,
     borderRadius: 28,
     backgroundColor: '#8A2BE2',
+    borderWidth: 3,
+    borderColor: 'white', // White border around the FAB
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: {width: 0, height: 6},
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 12, // Enhanced elevation for floating effect
-    transform: [{translateY: -2}], // Slight upward offset for floating effect
+    shadowOffset: {width: 0, height: 8},
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 16, // Enhanced elevation for floating effect
+    transform: [{translateY: -4}], // More prominent upward offset for floating effect
   },
   mainFabText: {
     color: '#fff',
@@ -1223,33 +1237,6 @@ const styles = StyleSheet.create({
 
   confirmButtonTextDisabled: {
     color: '#ccc',
-  },
-
-  // Subscription warning styles
-  subscriptionWarning: {
-    position: 'absolute',
-    top: 20,
-    right: 20,
-    backgroundColor: '#FFF3E0',
-    borderWidth: 1,
-    borderColor: '#FF6B35',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-
-  subscriptionWarningText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF6B35',
   },
 
   // Disabled button styles

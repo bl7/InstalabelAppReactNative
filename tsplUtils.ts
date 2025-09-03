@@ -1384,7 +1384,7 @@ function wrapText(text: string, maxChars: number): string[] {
   return lines;
 }
 
-// Helper function to format date like "FRI 05 Jul"
+// Helper function to format date like "MON. 01 Jul 2025"
 function formatDateForLabel(date: Date): string {
   const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   const monthNames = [
@@ -1405,11 +1405,12 @@ function formatDateForLabel(date: Date): string {
   const dayName = dayNames[date.getDay()];
   const day = date.getDate().toString().padStart(2, '0');
   const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
 
-  return `${dayName} ${day} ${month}`;
+  return `${dayName}. ${day} ${month} ${year}`;
 }
 
-// Helper function to format date for the "Printed:" line like "14 Aug"
+// Helper function to format date for the "Printed:" line like "14 Aug 2025"
 function formatDateDayMonth(date: Date): string {
   const monthNames = [
     'Jan',
@@ -1427,7 +1428,8 @@ function formatDateDayMonth(date: Date): string {
   ];
   const day = date.getDate().toString().padStart(2, '0');
   const month = monthNames[date.getMonth()];
-  return `${day} ${month}`;
+  const year = date.getFullYear();
+  return `${day} ${month} ${year}`;
 }
 
 /**
@@ -1768,6 +1770,452 @@ export const generateMenuItemLabel = (
       tspl += `TEXT 10,${
         containsY + index * 20
       },"${dateFontSize}",0,1,1,"${line}"\n`;
+    });
+  }
+
+  // Print the label
+  tspl += 'PRINT 1,1\n';
+
+  return tspl;
+};
+
+/**
+ * Generate TSPL commands for PPD (Pre-Packaged for Direct Sale) labels
+ * Custom format: Product name, Best Before date, Ingredients with allergens
+ */
+export const generatePPDLabel = (
+  menuItem: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+): string => {
+  const {dpi = 203, gap = 3, direction = 0, density = 8} = config;
+
+  let tspl = '';
+
+  // Initialize label (60mm × 40mm for PPD labels)
+  tspl += `SIZE 60mm,40mm\n`;
+  tspl += `GAP ${gap}mm,0mm\n`;
+  tspl += `DIRECTION ${direction}\n`;
+  tspl += `DENSITY ${density}\n`;
+  tspl += 'CLS\n';
+
+  // Calculate positions for 60mm × 40mm label using dynamic DPI
+  const labelWidth = Math.round((60 / 25.4) * dpi); // 60mm → dots
+  const labelHeight = Math.round((40 / 25.4) * dpi); // 40mm → dots
+
+  // Menu item name with optimal font sizing (same as menu item label)
+  const itemName = menuItem.menuItemName || menuItem.name;
+
+  // Use the same calculateOptimalFontSize function as menu item label
+  const fontConfig = calculateOptimalFontSize(itemName, labelWidth);
+  const nameFontSize = fontConfig.fontSize;
+  const nameMagnification = fontConfig.magnification;
+  const nameCharWidth = fontConfig.charWidth;
+
+  console.log(`🔍 PPD Label Font Selection:`);
+  console.log(`   Item: "${itemName}"`);
+  console.log(`   Selected Font: ${nameFontSize} × ${nameMagnification}`);
+  console.log(`   Character Width: ${nameCharWidth} dots`);
+  console.log(`   Total Text Width: ${itemName.length * nameCharWidth} dots`);
+  console.log(`   Label Width: ${labelWidth} dots`);
+
+  // Word wrapping logic for long item names with smart line breaking
+  const maxCharsPerLine = Math.floor((labelWidth - 20) / nameCharWidth); // Leave 10 dots margin on each side to prevent cutoff
+  let nameLines: string[] = [];
+  let totalNameHeight = 0;
+
+  // Smart line breaking: prefer 2 lines for better font size if possible
+  if (itemName.length > maxCharsPerLine || itemName.length > 20) {
+    // Split into multiple lines (either forced by length or preferred for readability)
+    const words = itemName.split(' ');
+
+    // For 2-line preference, try to create balanced lines
+    if (itemName.length > 20 && words.length >= 2) {
+      // Find the middle point to create balanced lines
+      const midPoint = Math.ceil(itemName.length / 2);
+      let firstLine = '';
+      let secondLine = '';
+
+      for (const word of words) {
+        if ((firstLine + ' ' + word).trim().length <= midPoint) {
+          firstLine += (firstLine ? ' ' : '') + word;
+        } else {
+          secondLine = words.slice(words.indexOf(word)).join(' ');
+          break;
+        }
+      }
+
+      if (firstLine && secondLine) {
+        nameLines = [firstLine.trim(), secondLine.trim()];
+      } else {
+        // Fallback to original logic if balanced split fails
+        let currentLine = '';
+        for (const word of words) {
+          if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
+            currentLine += (currentLine ? ' ' : '') + word;
+          } else {
+            if (currentLine) nameLines.push(currentLine.trim());
+            currentLine = word;
+          }
+        }
+        if (currentLine) nameLines.push(currentLine.trim());
+      }
+    } else {
+      // Original logic for other cases
+      let currentLine = '';
+      for (const word of words) {
+        if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
+          currentLine += (currentLine ? ' ' : '') + word;
+        } else {
+          if (currentLine) nameLines.push(currentLine.trim());
+          currentLine = word;
+        }
+      }
+      if (currentLine) nameLines.push(currentLine.trim());
+    }
+
+    totalNameHeight = nameLines.length * 33; // 33 dots per line (20 for text + 13 for spacing) for better readability
+  } else {
+    // Single line only for very short names
+    nameLines = [itemName];
+    totalNameHeight = 20; // Single line height
+  }
+
+  // Calculate starting Y position for the name section
+  const nameY = 20; // Reduced from 45 to 20 to remove extra space above rectangle
+
+  // Calculate X position for each line (center each line individually)
+  // Use the same centering approach as menu item label that works perfectly
+  const nameXPositions = nameLines.map(line => {
+    const centerX = centerText(
+      labelWidth,
+      line,
+      nameFontSize,
+      nameMagnification,
+    );
+    console.log(
+      `🔍 Centering "${line}": fontSize=${nameFontSize}, mag=${nameMagnification}, centerX=${centerX}`,
+    );
+    return centerX;
+  });
+
+  // Draw rectangle around the menu item name (adjusts for multiple lines)
+  const namePadding = 15; // Reduced from 20 to 15 for tighter fit
+  const rectLeft = 9; // Extended 6 more dots to the left (was 15, now 9)
+  const rectRight = labelWidth - 9; // Extended 6 more dots to the right (was 15, now 9)
+  const rectTop = nameY - namePadding;
+  const rectBottom = nameY + totalNameHeight + namePadding;
+
+  // Draw rectangle outline around the menu item name
+  tspl += `BOX ${rectLeft},${rectTop},${rectRight},${rectBottom},3\n`; // 3 = thicker outline
+
+  // Print menu item name (handles multiple lines)
+  nameLines.forEach((line, index) => {
+    const lineY = nameY + index * 33; // Increased from 28 to 33 dots spacing between lines for better readability
+    const lineX = nameXPositions[index];
+    tspl += `TEXT ${lineX},${lineY},"${nameFontSize}",0,${nameMagnification},${nameMagnification},"${line}"\n`;
+  });
+
+  // Best Before date
+  let finalExpiryDate: Date;
+  if (expiryDate) {
+    finalExpiryDate = new Date(expiryDate);
+  } else {
+    finalExpiryDate = new Date();
+    finalExpiryDate.setDate(finalExpiryDate.getDate() + 7); // Default 7 days
+  }
+
+  // Format date as "05 Sept 2025"
+  const day = finalExpiryDate.getDate().toString().padStart(2, '0');
+  const monthNames = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  const month = monthNames[finalExpiryDate.getMonth()];
+  const year = finalExpiryDate.getFullYear();
+  const formattedDate = `${day} ${month} ${year}`;
+
+  // Position the date below the name section with rectangle
+  const dateY = nameY + totalNameHeight + namePadding + 20; // 20 dots spacing after rectangle
+  const dateX = centerText(labelWidth, `Best Before: ${formattedDate}`, 3, 1);
+  tspl += `TEXT ${dateX},${dateY},"3",0,1,1,"Best Before: ${formattedDate}"\n`;
+
+  // Ingredients with allergens
+  if (menuItem.ingredients && menuItem.ingredients.length > 0) {
+    let ingredientsText = 'Ingredients: ';
+
+    // Process ingredients with allergen highlighting
+    const ingredientList = menuItem.ingredients.map((ingredient: string) => {
+      // Check if ingredient contains allergens
+      if (menuItem.allergens && menuItem.allergens.length > 0) {
+        const ingredientAllergens = menuItem.allergens.filter(
+          (allergen: string) =>
+            ingredient.toLowerCase().includes(allergen.toLowerCase()),
+        );
+
+        if (ingredientAllergens.length > 0) {
+          const allergenWarnings = ingredientAllergens
+            .map((a: string) => `*${a.toUpperCase()}*`)
+            .join(', ');
+          return `${ingredient} (${allergenWarnings})`;
+        }
+      }
+      return ingredient;
+    });
+
+    ingredientsText += ingredientList.join(', ');
+
+    // Word wrapping for ingredients (45 character limit)
+    const maxCharsPerLine = 45;
+    const words = ingredientsText.split(' ');
+    const lines: string[] = [];
+    let currentLine = '';
+
+    words.forEach(word => {
+      const testLine = currentLine + (currentLine ? ' ' : '') + word;
+      if (testLine.length <= maxCharsPerLine) {
+        currentLine = testLine;
+      } else {
+        if (currentLine) {
+          lines.push(currentLine.trim());
+        }
+        currentLine = word;
+      }
+    });
+    if (currentLine) {
+      lines.push(currentLine.trim());
+    }
+
+    // Print ingredients lines
+    lines.forEach((line, index) => {
+      const lineY = dateY + 20 + index * 20; // Position below date with 20 dots spacing
+      tspl += `TEXT 10,${lineY},"3",0,1,1,"${line}"\n`;
+    });
+  }
+
+  // Print the label
+  tspl += 'PRINT 1,1\n';
+
+  return tspl;
+};
+
+/**
+ * Generate TSPL commands for ETC (Custom) labels
+ * Similar to menu item labels but uses custom "contains" text instead of allergen detection
+ */
+export const generateETCLabel = (
+  menuItem: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+  initials?: string,
+  customContains?: string,
+): string => {
+  const {dpi = 203, gap = 3, direction = 0, density = 8} = config;
+
+  let tspl = '';
+
+  // Initialize label (60mm × 40mm for ETC labels)
+  tspl += `SIZE 60mm,40mm\n`;
+  tspl += `GAP ${gap}mm,0mm\n`;
+  tspl += `DIRECTION ${direction}\n`;
+  tspl += `DENSITY ${density}\n`;
+  tspl += 'CLS\n';
+
+  // Calculate positions for 60mm × 40mm label using dynamic DPI
+  const labelWidth = Math.round((60 / 25.4) * dpi); // 60mm → dots
+  const labelHeight = Math.round((40 / 25.4) * dpi); // 40mm → dots
+
+  // Menu item name with optimal font sizing (same as menu item label)
+  const itemName = menuItem.menuItemName || menuItem.name;
+
+  // Use the same calculateOptimalFontSize function as menu item label
+  const fontConfig = calculateOptimalFontSize(itemName, labelWidth);
+  const nameFontSize = fontConfig.fontSize;
+  const nameMagnification = fontConfig.magnification;
+  const nameCharWidth = fontConfig.charWidth;
+
+  console.log(`🔍 ETC Label Font Selection:`);
+  console.log(`   Item: "${itemName}"`);
+  console.log(`   Selected Font: ${nameFontSize} × ${nameMagnification}`);
+  console.log(`   Character Width: ${nameCharWidth} dots`);
+  console.log(`   Total Text Width: ${itemName.length * nameCharWidth} dots`);
+  console.log(`   Label Width: ${labelWidth} dots`);
+
+  // Word wrapping logic for long item names with smart line breaking
+  const maxCharsPerLine = Math.floor((labelWidth - 20) / nameCharWidth); // Leave 10 dots margin on each side to prevent cutoff
+  let nameLines: string[] = [];
+  let totalNameHeight = 0;
+
+  // Smart line breaking: prefer 2 lines for better font size if possible
+  if (itemName.length > maxCharsPerLine || itemName.length > 20) {
+    // Split into multiple lines (either forced by length or preferred for readability)
+    const words = itemName.split(' ');
+
+    // For 2-line preference, try to create balanced lines
+    if (itemName.length > 20 && words.length >= 2) {
+      // Find the middle point to create balanced lines
+      const midPoint = Math.ceil(itemName.length / 2);
+      let firstLine = '';
+      let secondLine = '';
+
+      for (const word of words) {
+        if ((firstLine + ' ' + word).trim().length <= midPoint) {
+          firstLine += (firstLine ? ' ' : '') + word;
+        } else {
+          secondLine = words.slice(words.indexOf(word)).join(' ');
+          break;
+        }
+      }
+
+      if (firstLine && secondLine) {
+        nameLines = [firstLine.trim(), secondLine.trim()];
+      } else {
+        // Fallback to original logic if balanced split fails
+        let currentLine = '';
+        for (const word of words) {
+          if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
+            currentLine += (currentLine ? ' ' : '') + word;
+          } else {
+            if (currentLine) nameLines.push(currentLine.trim());
+            currentLine = word;
+          }
+        }
+        if (currentLine) nameLines.push(currentLine.trim());
+      }
+    } else {
+      // Original logic for other cases
+      let currentLine = '';
+      for (const word of words) {
+        if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
+          currentLine += (currentLine ? ' ' : '') + word;
+        } else {
+          if (currentLine) nameLines.push(currentLine.trim());
+          currentLine = word;
+        }
+      }
+      if (currentLine) nameLines.push(currentLine.trim());
+    }
+
+    totalNameHeight = nameLines.length * 33; // 33 dots per line (20 for text + 13 for spacing) for better readability
+  } else {
+    // Single line only for very short names
+    nameLines = [itemName];
+    totalNameHeight = 20; // Single line height
+  }
+
+  // Calculate starting Y position for the name section
+  const nameY = 20; // Reduced from 45 to 20 to remove extra space above rectangle
+
+  // Calculate X position for each line (center each line individually)
+  // Use the same centering approach as menu item label that works perfectly
+  const nameXPositions = nameLines.map(line => {
+    const centerX = centerText(
+      labelWidth,
+      line,
+      nameFontSize,
+      nameMagnification,
+    );
+    console.log(
+      `🔍 Centering "${line}": fontSize=${nameFontSize}, mag=${nameMagnification}, centerX=${centerX}`,
+    );
+    return centerX;
+  });
+
+  // Draw rectangle around the menu item name (adjusts for multiple lines)
+  const namePadding = 15; // Reduced from 20 to 15 for tighter fit
+  const rectLeft = 9; // Extended 6 more dots to the left (was 15, now 9)
+  const rectRight = labelWidth - 9; // Extended 6 more dots to the right (was 15, now 9)
+  const rectTop = nameY - namePadding;
+  const rectBottom = nameY + totalNameHeight + namePadding;
+
+  // Draw rectangle outline around the menu item name
+  tspl += `BOX ${rectLeft},${rectTop},${rectRight},${rectBottom},3\n`; // 3 = thicker outline
+
+  // Print menu item name (handles multiple lines)
+  nameLines.forEach((line, index) => {
+    const lineY = nameY + index * 33; // Increased from 28 to 33 dots spacing between lines for better readability
+    const lineX = nameXPositions[index];
+    tspl += `TEXT ${lineX},${lineY},"${nameFontSize}",0,${nameMagnification},${nameMagnification},"${line}"\n`;
+  });
+
+  // Date information
+  const today = new Date();
+
+  // Use provided expiry date or calculate default (7 days from today)
+  let finalExpiryDate: Date;
+  if (expiryDate) {
+    // Parse the provided expiry date string
+    finalExpiryDate = new Date(expiryDate);
+  } else {
+    // Default to 7 days from today for menu items
+    finalExpiryDate = new Date();
+    finalExpiryDate.setDate(finalExpiryDate.getDate() + 7);
+  }
+
+  // Format date as "DD.MM.YYYY"
+  const day = finalExpiryDate.getDate().toString().padStart(2, '0');
+  const month = (finalExpiryDate.getMonth() + 1).toString().padStart(2, '0');
+  const year = finalExpiryDate.getFullYear();
+  const formattedDate = `${day}.${month}.${year}`;
+
+  // Calculate date position (below the name section with rectangle)
+  const dateY = nameY + totalNameHeight + namePadding + 20; // 20 dots spacing after rectangle
+  const dateX = centerText(labelWidth, `Expires: ${formattedDate}`, 3, 1);
+  tspl += `TEXT ${dateX},${dateY},"3",0,1,1,"Expires: ${formattedDate}"\n`;
+
+  // Printed date and initials
+  const printedDateY = dateY + 20;
+  const todayFormatted = `${today.getDate().toString().padStart(2, '0')}.${(
+    today.getMonth() + 1
+  )
+    .toString()
+    .padStart(2, '0')}.${today.getFullYear()}`;
+  const printedText = initials
+    ? `Printed: ${todayFormatted} ${initials}`
+    : `Printed: ${todayFormatted}`;
+  const printedX = centerText(labelWidth, printedText, 3, 1);
+  tspl += `TEXT ${printedX},${printedDateY},"3",0,1,1,"${printedText}"\n`;
+
+  // Custom contains text (instead of allergen detection)
+  if (customContains && customContains.trim()) {
+    const containsY = printedDateY + 20;
+    const containsText = `Contains: ${customContains.trim()}`;
+
+    // Word wrapping for contains text (45 character limit)
+    const maxCharsPerLine = 45;
+    const words = containsText.split(' ');
+    const lines: string[] = [];
+    let currentLine = '';
+
+    words.forEach(word => {
+      const testLine = currentLine + (currentLine ? ' ' : '') + word;
+      if (testLine.length <= maxCharsPerLine) {
+        currentLine = testLine;
+      } else {
+        if (currentLine) {
+          lines.push(currentLine.trim());
+        }
+        currentLine = word;
+      }
+    });
+    if (currentLine) {
+      lines.push(currentLine.trim());
+    }
+
+    // Print contains lines
+    lines.forEach((line, index) => {
+      const lineY = containsY + index * 20;
+      tspl += `TEXT 10,${lineY},"3",0,1,1,"${line}"\n`;
     });
   }
 

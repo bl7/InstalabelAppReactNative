@@ -119,7 +119,7 @@ const CustomLabelPage: React.FC = () => {
         name: itemName.trim(),
         type: 'menu',
         quantity: 1,
-        labelType: labelType,
+        labelType: 'etc' as const, // Always use 'etc' for custom labels
         expiryDate: expiryDate.trim() || undefined,
         allergens: [],
         ingredients: contains.trim()
@@ -132,6 +132,7 @@ const CustomLabelPage: React.FC = () => {
       };
 
       // Use the same printing logic as other labels
+      // No logging for custom labels
       await printTSPLLabels(
         [printQueueItem],
         [], // ingredients array (empty for custom)
@@ -140,6 +141,7 @@ const CustomLabelPage: React.FC = () => {
         'BL', // initials
         undefined, // storageInstructions
         undefined, // companyName
+        undefined, // No session ID - no logging for custom labels
       );
 
       showToast.success(

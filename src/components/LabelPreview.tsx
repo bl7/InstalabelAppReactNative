@@ -157,7 +157,8 @@ const LabelPreview: React.FC<LabelPreviewProps> = ({
         .toLocaleDateString('en-US', {weekday: 'short'})
         .toUpperCase();
 
-      return `${dayOfWeek}. ${day} ${month}`;
+      const year = date.getFullYear();
+      return `${dayOfWeek}. ${day} ${month} ${year}`;
     } catch (error) {
       console.error('Error formatting date:', error, dateString);
       return 'Invalid Date';
