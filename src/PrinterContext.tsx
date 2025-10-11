@@ -81,6 +81,7 @@ interface PrinterContextType {
     storageInstructions?: string,
     companyName?: string,
     sessionId?: string,
+    useFullPPDSFormat?: boolean,
   ) => Promise<void>;
 
   // Spooler functions
@@ -413,6 +414,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     storageInstructions?: string,
     companyName?: string,
     sessionId?: string, // Optional session ID for logging
+    useFullPPDSFormat?: boolean, // If true, use 56mm×80mm PPDS format; if false, use 60mm×40mm PPD format
   ) => {
     if (!connectedDevice) {
       throw new Error('No device connected');
@@ -468,32 +470,85 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
         let tsplCommands: string;
 
         if (item.labelType === 'ppds') {
-          // Use specialized PPDS label function for larger size and different formatting
-          // For PPDS labels, we need to pass the full ingredient objects for proper allergen display
-          const ppdsLabelData = {
-            ...labelData,
-            // Use the expiry date from the print queue item (prioritize custom expiry)
-            expiryLine: `Use by: ${customExpiry[item.uid] || item.expiryDate}`,
-            allergenWarningLine: item.allergens
-              ? item.allergens.join(', ')
-              : undefined,
-            // Pass storage instructions from the function parameter
-            storageInstructions:
-              storageInstructions ||
-              'Keep refrigerated below 5°C. Consume within 2 days of opening.',
-            // Set initials line to include company name for "Prepared by" line
-            initialsLine: companyName
-              ? `Prepared by: ${companyName}`
-              : 'Prepared by: InstaLabel Ltd',
-            fullIngredients:
-              item.type === 'menu' && item.ingredients
-                ? ingredients.filter((ing: any) =>
-                    item.ingredients.includes(ing.ingredientName),
-                  )
+          if (useFullPPDSFormat) {
+            // Use full PPDS label function for 56mm × 80mm format (PPDS page)
+            console.log(
+              '🔍 Using generatePPDSLabel for PPDS label (PPDS page):',
+              item.name,
+            );
+
+            // For PPDS labels, we need to pass the full ingredient objects for proper allergen display
+            const ppdsLabelData = {
+              ...labelData,
+              // Use the expiry date from the print queue item (prioritize custom expiry)
+              expiryLine: `Use by: ${
+                customExpiry[item.uid] || item.expiryDate
+              }`,
+              allergenWarningLine: item.allergens
+                ? item.allergens.join(', ')
                 : undefined,
-          };
-          console.log('🔍 PPDS Label Data:', ppdsLabelData);
-          tsplCommands = generatePPDSLabel(ppdsLabelData);
+              // Pass storage instructions from the function parameter
+              storageInstructions:
+                storageInstructions ||
+                'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+              // Set initials line to include company name for "Prepared by" line
+              initialsLine: companyName
+                ? `Prepared by: ${companyName}`
+                : 'Prepared by: InstaLabel Ltd',
+              fullIngredients:
+                item.type === 'menu' && item.ingredients
+                  ? ingredients.filter((ing: any) =>
+                      item.ingredients.includes(ing.ingredientName),
+                    )
+                  : undefined,
+            };
+            console.log('🔍 PPDS Label Data:', ppdsLabelData);
+            tsplCommands = generatePPDSLabel(ppdsLabelData);
+          } else {
+            // Use PPD label function for 60mm × 40mm format (labels page)
+            console.log(
+              '🔍 Using generatePPDLabel for PPDS label (labels page):',
+              item.name,
+            );
+
+            // Find the menu item object from the menuItems array
+            const menuItem = menuItems.find(
+              menu =>
+                menu.menuItemName === item.name || menu.name === item.name,
+            );
+            if (menuItem) {
+              console.log('✅ Found menu item object for PPDS->PPD:', menuItem);
+
+              // Add the full ingredients array for allergen lookup (same as regular menu items)
+              const menuItemIngredients = ingredients.filter((ing: any) =>
+                item.ingredients.includes(ing.ingredientName),
+              );
+              menuItem.fullIngredients = menuItemIngredients;
+              console.log('🔍 Added fullIngredients for PPDS->PPD:', {
+                count: menuItemIngredients?.length,
+                sample: menuItemIngredients?.slice(0, 3),
+                menuItemIngredients: item.ingredients,
+              });
+
+              // Pass the expiry date from the print queue item (prioritize custom expiry)
+              const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+              console.log('🔍 Calling generatePPDLabel for PPDS->PPD with:', {
+                menuItem: menuItem,
+                expiryDate: finalExpiryDate,
+                config: {dpi: 203},
+              });
+
+              tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
+                dpi: 203,
+              });
+            } else {
+              // Fallback to standard label if menu item not found
+              console.warn(
+                `⚠️ Menu item not found for PPDS->PPD label ${item.name}, using fallback`,
+              );
+              tsplCommands = generateDirectTSPLLabel(labelData);
+            }
+          }
         } else if (item.labelType === 'ppd') {
           // Use specialized PPD label function for custom format
           console.log('🔍 Using generatePPDLabel for PPD label:', item.name);
@@ -588,106 +643,70 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             tsplCommands = generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'menu') {
-          // Check if this is a PPDS label type from Labels page (should print as PPD)
-          if (item.labelType === 'ppds') {
-            console.log(
-              '🔍 PPDS label type from Labels page, using PPD format:',
-              item.name,
-            );
+          // Use generateMenuItemLabel for regular menu item labels (our improved function)
+          console.log(
+            '🍽️ Using generateMenuItemLabel for menu item:',
+            item.name,
+          );
+          console.log('🔍 Item details:', {
+            name: item.name,
+            type: item.type,
+            labelType: item.labelType,
+            expiryDate: item.expiryDate,
+            ingredients: item.ingredients,
+            allergens: item.allergens,
+          });
 
-            // Find the menu item object from the menuItems array
-            const menuItem = menuItems.find(
-              menu =>
-                menu.menuItemName === item.name || menu.name === item.name,
-            );
-            if (menuItem) {
-              console.log('✅ Found menu item object for PPDS->PPD:', menuItem);
-
-              // Pass the expiry date from the print queue item (prioritize custom expiry)
-              const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
-              console.log('🔍 Calling generatePPDLabel for PPDS->PPD with:', {
-                menuItem: menuItem,
-                expiryDate: finalExpiryDate,
-                config: {dpi: 203},
-              });
-
-              tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
-                dpi: 203,
-              });
-            } else {
-              // Fallback to standard label if menu item not found
-              console.warn(
-                `⚠️ Menu item not found for PPDS->PPD label ${item.name}, using fallback`,
-              );
-              tsplCommands = generateDirectTSPLLabel(labelData);
-            }
-          } else {
-            // Use generateMenuItemLabel for regular menu item labels (our improved function)
-            console.log(
-              '🍽️ Using generateMenuItemLabel for menu item:',
-              item.name,
-            );
-            console.log('🔍 Item details:', {
-              name: item.name,
-              type: item.type,
-              labelType: item.labelType,
-              expiryDate: item.expiryDate,
-              ingredients: item.ingredients,
-              allergens: item.allergens,
+          // Find the menu item object from the menuItems array
+          const menuItem = menuItems.find(
+            menu => menu.menuItemName === item.name || menu.name === item.name,
+          );
+          if (menuItem) {
+            console.log('✅ Found menu item object:', menuItem);
+            console.log('🔍 Menu item details:', {
+              menuItemName: menuItem.menuItemName,
+              name: menuItem.name,
+              allergens: menuItem.allergens,
+              ingredients: menuItem.ingredients,
             });
 
-            // Find the menu item object from the menuItems array
-            const menuItem = menuItems.find(
-              menu =>
-                menu.menuItemName === item.name || menu.name === item.name,
+            // Add the label type from the item
+            menuItem.labelType = item.labelType || 'PREP';
+            // Add the full ingredients array for allergen lookup
+            // Filter ingredients to only include those used in this menu item
+            const menuItemIngredients = ingredients.filter((ing: any) =>
+              item.ingredients.includes(ing.ingredientName),
             );
-            if (menuItem) {
-              console.log('✅ Found menu item object:', menuItem);
-              console.log('🔍 Menu item details:', {
-                menuItemName: menuItem.menuItemName,
-                name: menuItem.name,
-                allergens: menuItem.allergens,
-                ingredients: menuItem.ingredients,
-              });
+            menuItem.fullIngredients = menuItemIngredients;
+            console.log('🔍 Added fullIngredients:', {
+              count: menuItemIngredients?.length,
+              sample: menuItemIngredients?.slice(0, 3),
+              allIngredients: ingredients?.length,
+              menuItemIngredients: item.ingredients,
+            });
 
-              // Add the label type from the item
-              menuItem.labelType = item.labelType || 'PREP';
-              // Add the full ingredients array for allergen lookup
-              // Filter ingredients to only include those used in this menu item
-              const menuItemIngredients = ingredients.filter((ing: any) =>
-                item.ingredients.includes(ing.ingredientName),
-              );
-              menuItem.fullIngredients = menuItemIngredients;
-              console.log('🔍 Added fullIngredients:', {
-                count: menuItemIngredients?.length,
-                sample: menuItemIngredients?.slice(0, 3),
-                allIngredients: ingredients?.length,
-                menuItemIngredients: item.ingredients,
-              });
+            // Pass the expiry date from the print queue item (prioritize custom expiry)
+            const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+            console.log('🔍 Calling generateMenuItemLabel with:', {
+              menuItem: menuItem,
+              expiryDate: finalExpiryDate,
+              config: {dpi: 203},
+            });
 
-              // Pass the expiry date from the print queue item (prioritize custom expiry)
-              const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
-              console.log('🔍 Calling generateMenuItemLabel with:', {
-                menuItem: menuItem,
-                expiryDate: finalExpiryDate,
-                config: {dpi: 203},
-              });
-
-              tsplCommands = generateMenuItemLabel(
-                menuItem,
-                finalExpiryDate,
-                {
-                  dpi: 203,
-                },
-                item.customInitials || initials,
-              );
-            } else {
-              // Fallback to standard label if menu item not found
-              console.warn(
-                `⚠️ Menu item not found for ${item.name}, using fallback`,
-              );
-              tsplCommands = generateDirectTSPLLabel(labelData);
-            }
+            tsplCommands = generateMenuItemLabel(
+              menuItem,
+              finalExpiryDate,
+              {
+                dpi: 203,
+              },
+              item.customInitials || initials,
+            );
+          } else {
+            // Fallback to standard label if menu item not found
+            console.warn(
+              `⚠️ Menu item not found for ${item.name}, using fallback`,
+            );
+            tsplCommands = generateDirectTSPLLabel(labelData);
           }
         } else {
           // Use standard label function for other label types

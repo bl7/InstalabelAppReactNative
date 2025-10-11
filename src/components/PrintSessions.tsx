@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  Modal,
 } from 'react-native';
 import {
   Printer,
@@ -35,6 +36,10 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
   const [hasMore, setHasMore] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [showPPDSSizeModal, setShowPPDSSizeModal] = useState(false);
+  const [pendingReprintLog, setPendingReprintLog] = useState<PrintLog | null>(
+    null,
+  );
   const {printTSPLLabels, connectedDevice} = usePrinter();
 
   const fetchPrintLogs = async (isRefresh = false, page = 1) => {
@@ -198,6 +203,21 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
       return;
     }
 
+    // Check if this is a PPDS label type and show size selection popup
+    if (log.details.labelType === 'ppds') {
+      setPendingReprintLog(log);
+      setShowPPDSSizeModal(true);
+      return;
+    }
+
+    // For non-PPDS labels, proceed with normal reprint
+    await performReprint(log, 'ppd'); // Default to small size for non-PPDS
+  };
+
+  const performReprint = async (
+    log: PrintLog,
+    selectedSize: 'ppd' | 'ppds',
+  ) => {
     try {
       setReprintingLogId(log.id.toString());
       apiService.setAccessToken(accessToken);
@@ -225,26 +245,12 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
           ? 'use-first'
           : log.details.labelType;
 
-      // Smart PPDS detection - map web dashboard ppds to correct mobile types
-      if (lt === 'ppds') {
-        const labelHeight = log.details.labelHeight;
-
-        if (labelHeight === '80mm' || labelHeight === '80') {
-          lt = 'ppds'; // Keep as ppds for 80mm (56×80mm)
-        } else if (
-          labelHeight === '40mm' ||
-          labelHeight === '40' ||
-          !labelHeight
-        ) {
-          lt = 'ppd'; // Map to ppd for 40mm (60×40mm) or unknown
-        } else {
-          // Default to ppd for safety (60×40mm is more common)
-          lt = 'ppd';
-        }
-
+      // For PPDS labels, use the selected size from popup
+      if (log.details.labelType === 'ppds') {
+        lt = selectedSize; // Use the user-selected size (ppd or ppds)
         console.log(
-          `🔄 PPDS reprint: ${log.details.labelHeight} → ${lt} (${
-            lt === 'ppd' ? '60×40mm' : '56×80mm'
+          `🔄 PPDS reprint: User selected ${selectedSize} (${
+            selectedSize === 'ppd' ? '60×40mm' : '56×80mm'
           })`,
         );
       }
@@ -252,6 +258,51 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
         log.details.labelType,
         labelSettings.settings || [],
       );
+
+      // Find the menu item to get proper ingredients and allergens
+      let allergens: string[] = [];
+      let ingredientNames: string[] = [];
+
+      if (log.details.labelType !== 'defrost') {
+        // Find the menu item from the fetched menuItems
+        const menuItem = menuItems.find(
+          menu =>
+            menu.menuItemName === log.details.itemName ||
+            menu.name === log.details.itemName,
+        );
+
+        if (menuItem) {
+          console.log('🔍 Found menu item for reprint:', menuItem);
+
+          // Extract allergens from menu item ingredients
+          const allAllergens: string[] = [];
+          menuItem.ingredients?.forEach(ing => {
+            const ingredient = ingredients.find(
+              i => i.ingredientID === ing.uuid,
+            );
+            if (ingredient?.allergens) {
+              ingredient.allergens.forEach(allergen => {
+                allAllergens.push(allergen.allergenName);
+              });
+            }
+          });
+          allergens = [...new Set(allAllergens)];
+          ingredientNames =
+            menuItem.ingredients?.map(ing => ing.ingredientName) || [];
+
+          console.log('🔍 Extracted for reprint:', {
+            allergens,
+            ingredientNames,
+            menuItemIngredients: menuItem.ingredients,
+          });
+        } else {
+          console.warn(
+            '⚠️ Menu item not found for reprint:',
+            log.details.itemName,
+          );
+        }
+      }
+
       const printQueue = [
         {
           uid: `${log.details.itemId}-${Date.now()}`,
@@ -260,14 +311,16 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
           quantity: log.details.quantity,
           labelType: lt,
           expiryDate,
-          allergens: [],
-          ingredients: [],
+          allergens,
+          ingredients: ingredientNames,
           labelHeight: log.details.labelHeight || '40mm',
           customInitials: initials,
         },
       ];
 
-      // Print using PrinterContext helper
+      // Print using PrinterContext helper (this already logs to backend)
+      // For PPDS labels, use the correct format based on selected size
+      const useFullPPDSFormat = selectedSize === 'ppds';
       await printTSPLLabels(
         printQueue,
         ingredients,
@@ -277,26 +330,8 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
         undefined, // storageInstructions
         undefined, // companyName
         undefined, // sessionId - will generate new one
+        useFullPPDSFormat, // Use full PPDS format (56mm×80mm) if selectedSize is 'ppds'
       );
-
-      // Log reprint action with corrected label type
-      const reprintSessionId = apiService.generateSessionId();
-      await apiService.logPrintAction({
-        labelType: lt, // Use the corrected label type (ppd vs ppds)
-        itemId: log.details.itemId,
-        itemName: log.details.itemName,
-        quantity: log.details.quantity,
-        expiryDate: new Date(expiryDate).toISOString(),
-        labelHeight:
-          lt === 'ppd'
-            ? '40mm'
-            : lt === 'ppds'
-            ? '80mm'
-            : log.details.labelHeight || '40mm',
-        printerUsed:
-          (connectedDevice && connectedDevice.name) || 'Unknown Printer',
-        sessionId: reprintSessionId,
-      });
 
       Alert.alert('Reprint Started', 'The label is being reprinted.');
     } catch (err) {
@@ -305,6 +340,19 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
     } finally {
       setReprintingLogId(null);
     }
+  };
+
+  const handlePPDSSizeSelection = (size: 'ppd' | 'ppds') => {
+    setShowPPDSSizeModal(false);
+    if (pendingReprintLog) {
+      performReprint(pendingReprintLog, size);
+    }
+    setPendingReprintLog(null);
+  };
+
+  const handleCancelPPDSSize = () => {
+    setShowPPDSSizeModal(false);
+    setPendingReprintLog(null);
   };
 
   const formatDate = (dateString: string) => {
@@ -426,6 +474,18 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
           </Text>
         </View>
 
+        {log.details.initial && (
+          <View style={styles.detailRow}>
+            <Hash size={16} color="#9C27B0" />
+            <Text style={styles.detailLabel}>Initials:</Text>
+            <Text style={styles.detailValue}>
+              {typeof log.details.initial === 'string'
+                ? log.details.initial
+                : String(log.details.initial || 'N/A')}
+            </Text>
+          </View>
+        )}
+
         {log.details.printerUsed && (
           <View style={styles.detailRow}>
             <Printer size={16} color="#4CAF50" />
@@ -483,26 +543,78 @@ const PrintSessions: React.FC<PrintSessionsProps> = ({showDetails = false}) => {
   };
 
   return (
-    <FlatList
-      data={logs}
-      renderItem={renderLogItem}
-      keyExtractor={item => item.id.toString()}
-      style={styles.container}
-      contentContainerStyle={styles.listContentContainer}
-      refreshControl={
-        <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-      }
-      onEndReached={loadMore}
-      onEndReachedThreshold={0.5}
-      ListFooterComponent={renderFooter}
-      removeClippedSubviews={true}
-      maxToRenderPerBatch={5}
-      windowSize={5}
-      initialNumToRender={5}
-      showsVerticalScrollIndicator={false}
-      getItemLayout={undefined}
-      keyExtractor={(item: PrintLog) => item.id.toString()}
-    />
+    <>
+      <FlatList
+        data={logs}
+        renderItem={renderLogItem}
+        keyExtractor={item => item.id.toString()}
+        style={styles.container}
+        contentContainerStyle={styles.listContentContainer}
+        refreshControl={
+          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+        }
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={renderFooter}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={5}
+        windowSize={5}
+        initialNumToRender={5}
+        showsVerticalScrollIndicator={false}
+        getItemLayout={undefined}
+        keyExtractor={(item: PrintLog) => item.id.toString()}
+      />
+
+      {/* PPDS Size Selection Modal */}
+      <Modal
+        visible={showPPDSSizeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCancelPPDSSize}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.sizeSelectionModal}>
+            <Text style={styles.sizeSelectionTitle}>
+              Select PPDS Label Size
+            </Text>
+            <Text style={styles.sizeSelectionSubtitle}>
+              Choose the size for your PPDS label reprint
+            </Text>
+
+            <View style={styles.sizeOptionsContainer}>
+              <TouchableOpacity
+                style={styles.sizeOption}
+                onPress={() => handlePPDSSizeSelection('ppd')}>
+                <View style={styles.sizeOptionHeader}>
+                  <Text style={styles.sizeOptionTitle}>Small (40mm)</Text>
+                  <Text style={styles.sizeOptionDimensions}>60mm × 40mm</Text>
+                </View>
+                <Text style={styles.sizeOptionDescription}>
+                  Standard size for labels page
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.sizeOption}
+                onPress={() => handlePPDSSizeSelection('ppds')}>
+                <View style={styles.sizeOptionHeader}>
+                  <Text style={styles.sizeOptionTitle}>Large (80mm)</Text>
+                  <Text style={styles.sizeOptionDimensions}>56mm × 80mm</Text>
+                </View>
+                <Text style={styles.sizeOptionDescription}>
+                  Full UK-compliant PPDS format
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={handleCancelPPDSSize}>
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 };
 
@@ -679,6 +791,88 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     color: '#666',
     fontSize: 14,
+  },
+  // PPDS Size Selection Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  sizeSelectionModal: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  sizeSelectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  sizeSelectionSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  sizeOptionsContainer: {
+    gap: 12,
+    marginBottom: 24,
+  },
+  sizeOption: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: '#e9ecef',
+  },
+  sizeOptionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  sizeOptionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
+  sizeOptionDimensions: {
+    fontSize: 12,
+    color: '#8A2BE2',
+    fontWeight: '500',
+    backgroundColor: '#f0f0ff',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  sizeOptionDescription: {
+    fontSize: 12,
+    color: '#666',
+  },
+  cancelButton: {
+    backgroundColor: '#f8f9fa',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
   },
 });
 

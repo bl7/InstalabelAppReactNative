@@ -23,7 +23,7 @@ export interface UserPreferences {
 
 // Default preferences
 const DEFAULT_PREFERENCES: UserPreferences = {
-  defaultInitials: 'NG',
+  defaultInitials: '',
   defaultLabelType: 'prep',
   defaultLabelHeight: '40mm',
   useInitials: true,

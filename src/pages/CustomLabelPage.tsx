@@ -138,7 +138,7 @@ const CustomLabelPage: React.FC = () => {
         [], // ingredients array (empty for custom)
         [customMenuItem], // menuItems array
         {[printQueueItem.uid]: expiryDate.trim() || ''}, // customExpiry
-        'BL', // initials
+        '', // initials
         undefined, // storageInstructions
         undefined, // companyName
         undefined, // No session ID - no logging for custom labels

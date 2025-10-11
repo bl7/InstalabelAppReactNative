@@ -80,7 +80,7 @@ const SettingsPage: React.FC = () => {
 
   // Label initials settings from InstaLabel.co API
   const [useInitials, setUseInitials] = useState(true);
-  const [availableInitials, setAvailableInitials] = useState<string[]>(['NG']);
+  const [availableInitials, setAvailableInitials] = useState<string[]>([]);
   const [isLoadingInitials, setIsLoadingInitials] = useState(false);
 
   // Load label settings from InstaLabel.co API
@@ -150,13 +150,13 @@ const SettingsPage: React.FC = () => {
         setAvailableInitials(response.initials);
         console.log('✅ Label initials loaded:', response.initials);
       } else {
-        console.log('⚠️ No initials available from API, using defaults');
-        setAvailableInitials(['NG']);
+        console.log('⚠️ No initials available from API, using empty list');
+        setAvailableInitials([]);
       }
     } catch (error) {
       console.error('❌ Error loading label initials:', error);
-      // Keep default initials on error
-      setAvailableInitials(['NG']);
+      // Keep empty initials on error
+      setAvailableInitials([]);
     } finally {
       setIsLoadingInitials(false);
     }

@@ -512,6 +512,7 @@ const PPDSPage: React.FC = () => {
         storageInstructions, // Pass storage instructions
         companyName, // Pass company name for "Prepared by" line
         sessionId, // Pass session ID for logging
+        true, // Use full PPDS format (56mm × 80mm)
       );
 
       showToast.success(

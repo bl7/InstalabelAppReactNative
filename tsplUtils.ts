@@ -3,6 +3,8 @@
  * Supports MUNBYN, Zebra, and other TSPL-compatible printers
  */
 
+import {parseDate} from './src/utils/labelManagement';
+
 export interface LabelSize {
   width: number; // in mm
   height: number; // in mm
@@ -1126,7 +1128,7 @@ export const generateIngredientLabel = (
   // Use same rectangle positioning as menu item labels
   const namePadding = 15; // Same padding as menu item labels
   const rectLeft = 9; // Same as menu item labels: 9 dots from left
-  const rectRight = labelWidth - 9; // Same as menu item labels: 9 dots from right
+  const rectRight = labelWidth - 18; // Increased right margin from 15 to 18 dots
   const rectTop = nameY - namePadding;
   const rectBottom = nameY + totalNameHeight + namePadding;
 
@@ -1158,9 +1160,11 @@ export const generateIngredientLabel = (
   // Use provided expiry date or calculate default (7 days from today)
   let finalExpiryDate: Date;
   if (expiryDate) {
-    // Parse the provided expiry date string
-    finalExpiryDate = new Date(expiryDate);
-    if (isNaN(finalExpiryDate.getTime())) {
+    // Parse the provided expiry date string (handles DD.MM.YYYY format)
+    const parsedDate = parseDate(expiryDate);
+    if (parsedDate) {
+      finalExpiryDate = parsedDate;
+    } else {
       // If parsing fails, fall back to default
       finalExpiryDate = new Date(today);
       finalExpiryDate.setDate(finalExpiryDate.getDate() + 7);
@@ -1189,33 +1193,72 @@ export const generateIngredientLabel = (
   const printedY = dateY + 40; // Increased from 20 to 40 dots below expiry line for more spacing
   tspl += `TEXT 10,${printedY},"${dateFontSize}",0,1,1,"${printedText}"\n`;
 
-  // Add label type (middle) and initials (right side)
-  const labelType = 'PREP'; // Default label type for ingredients
-  const labelTypeX = Math.floor(labelWidth / 2) - 20; // Center PREP with slight offset
-  tspl += `TEXT ${labelTypeX},${printedY},"${dateFontSize}",0,1,1,"${labelType}"\n`;
-
-  // Add initials (BL) on the right side of the printed line
-  const userInitials = initials || 'BL'; // Use passed initials or default to 'BL'
+  // Add initials on the right side of the printed line (no label type for ingredients)
+  const userInitials = initials || ''; // Use passed initials or empty string
   const initialsX = labelWidth - 50; // Position on the right side
   tspl += `TEXT ${initialsX},${printedY},"${dateFontSize}",0,1,1,"${userInitials}"\n`;
 
-  // Allergen warning (if available) - below the printed line, same format as defrost label
-  if (ingredient.allergens && ingredient.allergens.length > 0) {
-    const allergenWarning = 'CONTAINS ALLERGENS';
-    const warningFont = 3; // Same as defrosted label
-    const warningMag = 2; // Same as defrosted label
+  // Allergen information - below the printed line, always show something
+  const warningY = printedY + 30; // 30 dots below printed line
 
-    // Use custom character width for proper centering (same as defrost label)
-    const warningCharWidth = 12; // Font 3 character width for accurate centering
+  if (ingredient.allergens && ingredient.allergens.length > 0) {
+    // Has allergens - show warning and list
+    const allergenWarning = 'CONTAINS ALLERGENS';
+    const warningFont = dateFontSize; // Same font size as printed line
+    const warningMag = 1; // Normal magnification
+
+    // Use same centering logic as other text elements
+    const warningCharWidth = 12; // Font 3 character width for centering
     const warningX = centerTextCustom(
       labelWidth,
       allergenWarning,
       warningCharWidth * warningMag,
     );
 
-    // Position below the printed line
-    const warningY = printedY + 30; // 30 dots below printed line
     tspl += `TEXT ${warningX},${warningY},"${warningFont}",0,${warningMag},${warningMag},"${allergenWarning}"\n`;
+
+    // Add specific allergens list below the warning with word wrapping
+    const allergenNames = ingredient.allergens
+      .map((a: any) => {
+        const allergenName = typeof a === 'string' ? a : a.allergenName;
+        return allergenName ? allergenName.toUpperCase() : 'UNKNOWN';
+      })
+      .join(', ');
+
+    const allergenListFont = dateFontSize; // Same font size as printed line
+    const allergenListMag = 1; // Normal magnification
+    const allergenListCharWidth = 12; // Font 3 character width for centering
+
+    // Word wrapping logic for allergen list (same as other text elements)
+    const maxCharsPerLine = Math.floor(
+      (labelWidth - 20) / allergenListCharWidth,
+    ); // Leave 10 dots margin on each side
+    const allergenLines = wrapText(allergenNames, maxCharsPerLine);
+
+    // Print each line of allergens
+    allergenLines.forEach((line, index) => {
+      const allergenListX = centerTextCustom(
+        labelWidth,
+        line,
+        allergenListCharWidth * allergenListMag,
+      );
+      const allergenListY = warningY + 40 + index * 25; // 25 dots spacing between lines
+      tspl += `TEXT ${allergenListX},${allergenListY},"${allergenListFont}",0,${allergenListMag},${allergenListMag},"${line}"\n`;
+    });
+  } else {
+    // No allergens - show "Does not contain any allergen"
+    const noAllergenText = 'DOES NOT CONTAIN ANY ALLERGEN';
+    const noAllergenFont = dateFontSize; // Same font size as printed line
+    const noAllergenMag = 1; // Normal magnification
+    const noAllergenCharWidth = 12; // Font 3 character width for centering
+
+    const noAllergenX = centerTextCustom(
+      labelWidth,
+      noAllergenText,
+      noAllergenCharWidth * noAllergenMag,
+    );
+
+    tspl += `TEXT ${noAllergenX},${warningY},"${noAllergenFont}",0,${noAllergenMag},${noAllergenMag},"${noAllergenText}"\n`;
   }
 
   // Print the label
@@ -1619,7 +1662,7 @@ export const generateMenuItemLabel = (
 
   // Draw rectangle around the menu item name (adjusts for multiple lines)
   const namePadding = 15; // Reduced from 20 to 15 for tighter fit
-  const rectLeft = 9; // Extended 6 more dots to the left (was 15, now 9)
+  const rectLeft = 15; // Fixed left margin to prevent cutoff
   const rectRight = labelWidth - 9; // Extended 6 more dots to the right (was 15, now 9)
   const rectTop = nameY - namePadding;
   const rectBottom = nameY + totalNameHeight + namePadding;
@@ -1640,9 +1683,11 @@ export const generateMenuItemLabel = (
   // Use provided expiry date or calculate default (7 days from today)
   let finalExpiryDate: Date;
   if (expiryDate) {
-    // Parse the provided expiry date string
-    finalExpiryDate = new Date(expiryDate);
-    if (isNaN(finalExpiryDate.getTime())) {
+    // Parse the provided expiry date string (handles DD.MM.YYYY format)
+    const parsedDate = parseDate(expiryDate);
+    if (parsedDate) {
+      finalExpiryDate = parsedDate;
+    } else {
       // If parsing fails, fall back to default
       finalExpiryDate = new Date(today);
       finalExpiryDate.setDate(finalExpiryDate.getDate() + 7);
@@ -1672,7 +1717,7 @@ export const generateMenuItemLabel = (
   tspl += `TEXT 10,${printedY},"${dateFontSize}",0,1,1,"${printedText}"\n`;
 
   // Add label type (middle) and initials (right side)
-  const userInitials = initials || 'BL'; // Use passed initials or default to 'BL'
+  const userInitials = initials || ''; // Use passed initials or empty string
 
   // Only show label type if it's not 'default'
   let labelType = '';
@@ -1680,9 +1725,12 @@ export const generateMenuItemLabel = (
     labelType = menuItem.labelType.toUpperCase();
   }
 
-  // Add label type in the middle (centered) only if it exists
+  // Add label type after the printed date with proper spacing
   if (labelType) {
-    const labelTypeX = Math.floor(labelWidth / 2) - 20; // Center label type with slight offset
+    // Calculate where the printed date text ends with more accurate character width
+    const printedDateTextWidth = printedText.length * 12; // More accurate character width for font 3
+    const spacing = 8; // 8 dots spacing between date and label type
+    const labelTypeX = 10 + printedDateTextWidth + spacing; // Start after date + spacing
     tspl += `TEXT ${labelTypeX},${printedY},"${dateFontSize}",0,1,1,"${labelType}"\n`;
   }
 
@@ -1737,14 +1785,14 @@ export const generateMenuItemLabel = (
       allergensText = 'Contains: Does not contain any allergens';
     }
 
-    // Word wrapping logic with 45 character limit
-    const maxCharsPerLine = 45; // Fixed 45 character limit
+    // Word wrapping logic with 40 character limit (prevents right overflow)
+    const maxCharsPerLine = 40; // Fixed 40 character limit (prevents right overflow)
     const words = allergensText.split(' ');
     const lines: string[] = [];
     let currentLine = '';
 
     words.forEach(word => {
-      // Check if adding this word would exceed 45 characters
+      // Check if adding this word would exceed 40 characters
       const testLine = currentLine + (currentLine ? ' ' : '') + word;
 
       if (testLine.length <= maxCharsPerLine) {
@@ -1901,7 +1949,7 @@ export const generatePPDLabel = (
 
   // Draw rectangle around the menu item name (adjusts for multiple lines)
   const namePadding = 15; // Reduced from 20 to 15 for tighter fit
-  const rectLeft = 9; // Extended 6 more dots to the left (was 15, now 9)
+  const rectLeft = 15; // Fixed left margin to prevent cutoff
   const rectRight = labelWidth - 9; // Extended 6 more dots to the right (was 15, now 9)
   const rectTop = nameY - namePadding;
   const rectBottom = nameY + totalNameHeight + namePadding;
@@ -1919,7 +1967,46 @@ export const generatePPDLabel = (
   // Best Before date
   let finalExpiryDate: Date;
   if (expiryDate) {
-    finalExpiryDate = new Date(expiryDate);
+    // Handle different date formats that might be passed
+    let dateString = expiryDate;
+
+    // If it contains a colon, extract the date part
+    if (dateString.includes(':')) {
+      dateString = dateString.split(':')[1]?.trim() || dateString;
+    }
+
+    // Try to parse the date string - handle DD.MM.YYYY format from calculateExpiryDate
+    let parsedDate: Date | null = null;
+
+    // First try to parse DD.MM.YYYY format (from calculateExpiryDate)
+    const ddMMYYYYMatch = dateString.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (ddMMYYYYMatch) {
+      const [, day, month, year] = ddMMYYYYMatch;
+      parsedDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    } else {
+      // Try standard Date constructor
+      parsedDate = new Date(dateString);
+      if (isNaN(parsedDate.getTime())) {
+        // If parsing fails, try to extract date from YYYY-MM-DD format
+        const dateMatch = dateString.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (dateMatch) {
+          const [, year, month, day] = dateMatch;
+          parsedDate = new Date(
+            parseInt(year),
+            parseInt(month) - 1,
+            parseInt(day),
+          );
+        }
+      }
+    }
+
+    if (parsedDate && !isNaN(parsedDate.getTime())) {
+      finalExpiryDate = parsedDate;
+    } else {
+      // If we still couldn't parse the date, use a default (7 days from now)
+      finalExpiryDate = new Date();
+      finalExpiryDate.setDate(finalExpiryDate.getDate() + 7);
+    }
   } else {
     finalExpiryDate = new Date();
     finalExpiryDate.setDate(finalExpiryDate.getDate() + 7); // Default 7 days
@@ -1955,28 +2042,47 @@ export const generatePPDLabel = (
     let ingredientsText = 'Ingredients: ';
 
     // Process ingredients with allergen highlighting
-    const ingredientList = menuItem.ingredients.map((ingredient: string) => {
-      // Check if ingredient contains allergens
-      if (menuItem.allergens && menuItem.allergens.length > 0) {
-        const ingredientAllergens = menuItem.allergens.filter(
-          (allergen: string) =>
-            ingredient.toLowerCase().includes(allergen.toLowerCase()),
-        );
+    // Handle both string arrays and object arrays
+    const ingredientList = menuItem.ingredients.map((ingredient: any) => {
+      // Extract ingredient name from object or use string directly
+      const ingredientName =
+        typeof ingredient === 'string'
+          ? ingredient
+          : ingredient.ingredientName || ingredient.name || String(ingredient);
 
-        if (ingredientAllergens.length > 0) {
-          const allergenWarnings = ingredientAllergens
-            .map((a: string) => `*${a.toUpperCase()}*`)
-            .join(', ');
-          return `${ingredient} (${allergenWarnings})`;
-        }
+      // Check if ingredient contains allergens using fullIngredients data
+      let fullIngredientObject = null as any;
+      if (menuItem.fullIngredients && Array.isArray(menuItem.fullIngredients)) {
+        const foundIngredient = menuItem.fullIngredients.find(
+          (ing: any) => ing.ingredientName === ingredientName,
+        );
+        fullIngredientObject = foundIngredient;
+      } else {
+        fullIngredientObject = ingredient;
       }
-      return ingredient;
+
+      // Extract allergens from the ingredient object
+      if (
+        fullIngredientObject &&
+        fullIngredientObject.allergens &&
+        fullIngredientObject.allergens.length > 0
+      ) {
+        const allergenWarnings = fullIngredientObject.allergens
+          .map((a: any) => {
+            const allergenName = typeof a === 'string' ? a : a.allergenName;
+            return allergenName ? `*${allergenName.toUpperCase()}*` : '';
+          })
+          .filter(Boolean)
+          .join(', ');
+        return `${ingredientName} ${allergenWarnings}`;
+      }
+      return ingredientName;
     });
 
     ingredientsText += ingredientList.join(', ');
 
-    // Word wrapping for ingredients (45 character limit)
-    const maxCharsPerLine = 45;
+    // Word wrapping for ingredients (40 character limit - prevents right overflow)
+    const maxCharsPerLine = 40;
     const words = ingredientsText.split(' ');
     const lines: string[] = [];
     let currentLine = '';
@@ -2133,7 +2239,7 @@ export const generateETCLabel = (
 
   // Draw rectangle around the menu item name (adjusts for multiple lines)
   const namePadding = 15; // Reduced from 20 to 15 for tighter fit
-  const rectLeft = 9; // Extended 6 more dots to the left (was 15, now 9)
+  const rectLeft = 15; // Fixed left margin to prevent cutoff
   const rectRight = labelWidth - 9; // Extended 6 more dots to the right (was 15, now 9)
   const rectTop = nameY - namePadding;
   const rectBottom = nameY + totalNameHeight + namePadding;

@@ -12,7 +12,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import {Package, Printer, Eye} from 'lucide-react-native';
+import {Package, Printer} from 'lucide-react-native';
 
 import PrintQueueStatus from '../components/PrintQueueStatus';
 import {useAuth} from '../contexts/AuthContext';
@@ -198,6 +198,7 @@ const BulkPage: React.FC = () => {
         undefined, // storageInstructions
         user?.company_name || 'InstaLabel Ltd', // companyName
         sessionId, // Pass session ID for logging
+        false, // Use standard format (60mm × 40mm) for bulk printing
       );
 
       showToast.success(
@@ -308,7 +309,11 @@ const BulkPage: React.FC = () => {
           ) : (
             <View style={styles.listsContainer}>
               {bulkLists.map(list => (
-                <View key={list.id} style={styles.listCard}>
+                <TouchableOpacity
+                  key={list.id}
+                  style={styles.listCard}
+                  onPress={() => viewListItems(list)}
+                  activeOpacity={0.7}>
                   <View style={styles.listCardHeader}>
                     <View style={styles.listInfo}>
                       <Text style={styles.listName}>{list.name}</Text>
@@ -322,15 +327,8 @@ const BulkPage: React.FC = () => {
                         {new Date(list.created_at).toLocaleDateString()}
                       </Text>
                     </View>
-                    <View style={styles.listActions}>
-                      <TouchableOpacity
-                        style={styles.listActionButton}
-                        onPress={() => viewListItems(list)}>
-                        <Eye size={16} color="#8A2BE2" />
-                      </TouchableOpacity>
-                    </View>
                   </View>
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           )}
@@ -571,12 +569,10 @@ const styles = StyleSheet.create({
   },
   listCardHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
   listInfo: {
     flex: 1,
-    marginRight: 12,
   },
   listName: {
     fontSize: 16,
@@ -593,17 +589,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
   },
-  listActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  listActionButton: {
-    padding: 8,
-    borderRadius: 6,
-    backgroundColor: '#f8f9fa',
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-  },
+
   itemsContainer: {
     gap: 12,
   },

@@ -121,8 +121,8 @@ const LabelsPage: React.FC = () => {
 
   // Print settings
   const [customExpiry, setCustomExpiry] = useState<Record<string, string>>({});
-  const [initials, setInitials] = useState('NG');
-  const [availableInitials, setAvailableInitials] = useState<string[]>(['NG']);
+  const [initials, setInitials] = useState('');
+  const [availableInitials, setAvailableInitials] = useState<string[]>([]);
   const [isLoadingInitials, setIsLoadingInitials] = useState(false);
 
   // Label settings from InstaLabel.co API
@@ -443,7 +443,7 @@ const LabelsPage: React.FC = () => {
               setAvailableInitials(response.initials);
               // Set the first available initial as default if current one is not in the list
               if (!response.initials.includes(initials)) {
-                setInitials(response.initials[0] || 'NG');
+                setInitials(response.initials[0] || '');
               }
               console.log(
                 '✅ Label initials loaded from API in background:',
@@ -457,9 +457,11 @@ const LabelsPage: React.FC = () => {
                   console.warn('⚠️ Cache update failed:', cacheError),
                 );
             } else {
-              console.log('⚠️ No initials available from API, using defaults');
+              console.log(
+                '⚠️ No initials available from API, using empty list',
+              );
               if (!cachedInitials) {
-                setAvailableInitials(['NG']);
+                setAvailableInitials([]);
               }
             }
           })
@@ -469,20 +471,20 @@ const LabelsPage: React.FC = () => {
               error,
             );
             if (!cachedInitials) {
-              setAvailableInitials(['NG']);
+              setAvailableInitials([]);
             }
           });
       } else {
         console.log('📱 Offline mode - using cached label initials');
         if (!cachedInitials) {
-          setAvailableInitials(['NG']);
+          setAvailableInitials([]);
         }
       }
     } catch (error) {
       console.error('❌ Error loading label initials:', error);
-      // Keep default initials on error
+      // Keep empty initials on error
       if (!cachedInitials) {
-        setAvailableInitials(['NG']);
+        setAvailableInitials([]);
       }
     } finally {
       setIsLoadingInitials(false);
@@ -1058,6 +1060,7 @@ const LabelsPage: React.FC = () => {
         undefined, // storageInstructions
         companyName,
         sessionId, // Pass session ID for logging
+        false, // Use PPD format (60mm × 40mm) for labels page
       );
 
       showToast.success(
