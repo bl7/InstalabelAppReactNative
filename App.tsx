@@ -2,7 +2,9 @@ import React, {useEffect} from 'react';
 import {AuthProvider, useAuth} from './src/contexts/AuthContext';
 import {SubscriptionProvider} from './src/contexts/SubscriptionContext';
 import {PrinterProvider} from './src/PrinterContext';
+import {ModeProvider, useMode} from './src/contexts/ModeContext';
 import LoginPage from './src/pages/LoginPage';
+import ModeSelectionPage from './src/pages/ModeSelectionPage';
 import CustomTabNavigator from './src/components/CustomTabNavigator';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import OfflineNotice from './src/components/OfflineNotice';
@@ -14,11 +16,13 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <SubscriptionProvider>
-          <PrinterProvider>
-            <AppContent />
-          </PrinterProvider>
-        </SubscriptionProvider>
+        <ModeProvider>
+          <SubscriptionProvider>
+            <PrinterProvider>
+              <AppContent />
+            </PrinterProvider>
+          </SubscriptionProvider>
+        </ModeProvider>
       </AuthProvider>
     </ErrorBoundary>
   );
@@ -27,6 +31,7 @@ const App: React.FC = () => {
 // Move AppContent inside the context providers
 const AppContent: React.FC = () => {
   const {isAuthenticated, accessToken} = useAuth();
+  const {selectedMode, isLoading: isModeLoading} = useMode();
 
   // Initialize background services
   useEffect(() => {
@@ -44,6 +49,27 @@ const AppContent: React.FC = () => {
       <>
         <OfflineNotice />
         <LoginPage />
+      </>
+    );
+  }
+
+  // Show mode selection if authenticated but no mode selected
+  if (!isModeLoading && !selectedMode) {
+    return (
+      <>
+        <OfflineNotice />
+        <ModeSelectionPage />
+        <Toast />
+      </>
+    );
+  }
+
+  // Show loading while mode is being loaded
+  if (isModeLoading) {
+    return (
+      <>
+        <OfflineNotice />
+        <Toast />
       </>
     );
   }

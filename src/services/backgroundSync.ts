@@ -70,6 +70,14 @@ class BackgroundSyncService {
 
       console.log('🔄 Performing background sync...');
 
+      // Sync pending offline logs first
+      try {
+        const {apiService} = require('./api');
+        await apiService.syncPendingLogs();
+      } catch (error) {
+        console.error('❌ Failed to sync pending logs:', error);
+      }
+
       // Get cache status to see what needs updating
       const cacheStatus = await offlineManager.getCacheStatus();
 

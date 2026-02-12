@@ -11,9 +11,15 @@ import {
   generateDirectTSPLLabel,
   generatePPDSLabel,
   generateIngredientLabel,
+  generateIngredientLabel80mm,
   generateMenuItemLabel,
+  generateMenuItemLabel80mm,
   generatePPDLabel,
+  generatePPDLabel80mm,
   generateETCLabel,
+  generateETCLabel80mm,
+  generateCircularAllergenSticker,
+  PPDSLabelExtras,
 } from '../tsplUtils';
 import {generateTSCLabelContent} from './utils/labelManagement';
 import PrintSpooler, {PrintJob} from './services/printSpooler';
@@ -82,6 +88,7 @@ interface PrinterContextType {
     companyName?: string,
     sessionId?: string,
     useFullPPDSFormat?: boolean,
+    ppdsExtras?: PPDSLabelExtras,
   ) => Promise<void>;
 
   // Spooler functions
@@ -125,6 +132,12 @@ interface PrinterContextType {
     allergens?: string[],
     storageInstructions?: string,
     companyName?: string,
+  ) => Promise<void>;
+
+  // Circular allergen sticker printing function
+  printCircularAllergenSticker: (
+    printQueue: any[],
+    customExpiry: Record<string, string>,
   ) => Promise<void>;
 }
 
@@ -415,6 +428,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     companyName?: string,
     sessionId?: string, // Optional session ID for logging
     useFullPPDSFormat?: boolean, // If true, use 56mm×80mm PPDS format; if false, use 60mm×40mm PPD format
+    ppdsExtras?: PPDSLabelExtras,
   ) => {
     if (!connectedDevice) {
       throw new Error('No device connected');
@@ -501,6 +515,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
                       item.ingredients.includes(ing.ingredientName),
                     )
                   : undefined,
+              ppdsExtras,
             };
             console.log('🔍 PPDS Label Data:', ppdsLabelData);
             tsplCommands = generatePPDSLabel(ppdsLabelData);
@@ -540,7 +555,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
               tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
                 dpi: 203,
-              });
+              }, ppdsExtras);
             } else {
               // Fallback to standard label if menu item not found
               console.warn(
@@ -568,15 +583,33 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               config: {dpi: 203},
             });
 
-            tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
-              dpi: 203,
-            });
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDLabel80mm(menuItem, finalExpiryDate, {
+                  dpi: 203,
+                })
+              : generatePPDLabel(menuItem, finalExpiryDate, {
+                  dpi: 203,
+                });
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for PPD label ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.labelType === 'etc') {
           // Use specialized ETC label function for custom contains text
@@ -599,21 +632,45 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               customContains: item.ingredients?.join(', '),
             });
 
-            tsplCommands = generateETCLabel(
-              menuItem,
-              finalExpiryDate,
-              {
-                dpi: 203,
-              },
-              item.customInitials || initials,
-              item.ingredients?.join(', '),
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateETCLabel80mm(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                  item.ingredients?.join(', '),
+                )
+              : generateETCLabel(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                  item.ingredients?.join(', '),
+                );
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for ETC label ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'ingredients') {
           // Use generateIngredientLabel for ingredient labels (our improved function)
@@ -629,18 +686,39 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           if (ingredient) {
             console.log('✅ Found ingredient object:', ingredient);
             // Pass the expiry date from the print queue item (prioritize custom expiry)
-            tsplCommands = generateIngredientLabel(
-              ingredient,
-              customExpiry[item.uid] || item.expiryDate,
-              {dpi: 203},
-              item.customInitials || initials,
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateIngredientLabel80mm(
+                  ingredient,
+                  customExpiry[item.uid] || item.expiryDate,
+                  {dpi: 203},
+                  item.customInitials || initials,
+                )
+              : generateIngredientLabel(
+                  ingredient,
+                  customExpiry[item.uid] || item.expiryDate,
+                  {dpi: 203},
+                  item.customInitials || initials,
+                );
           } else {
             // Fallback to standard label if ingredient not found
             console.warn(
               `⚠️ Ingredient not found for ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'menu') {
           // Use generateMenuItemLabel for regular menu item labels (our improved function)
@@ -693,24 +771,59 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               config: {dpi: 203},
             });
 
-            tsplCommands = generateMenuItemLabel(
-              menuItem,
-              finalExpiryDate,
-              {
-                dpi: 203,
-              },
-              item.customInitials || initials,
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateMenuItemLabel80mm(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                )
+              : generateMenuItemLabel(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                );
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else {
           // Use standard label function for other label types
-          tsplCommands = generateDirectTSPLLabel(labelData);
+          tsplCommands = useFullPPDSFormat
+            ? generatePPDSLabel({
+                ...labelData,
+                expiryLine: `Use by: ${customExpiry[item.uid] || item.expiryDate}`,
+                storageInstructions:
+                  storageInstructions ||
+                  'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                initialsLine: companyName
+                  ? `Prepared by: ${companyName}`
+                  : 'Prepared by: InstaLabel Ltd',
+                ppdsExtras,
+              })
+            : generateDirectTSPLLabel(labelData);
         }
 
         // Print the label quantity times
@@ -739,7 +852,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             quantity: quantity,
             expiryDate: customExpiry[item.uid] || item.expiryDate,
             initial: item.customInitials || initials,
-            labelHeight: item.labelType === 'ppds' ? '80mm' : '40mm',
+            labelHeight:
+              useFullPPDSFormat || item.labelType === 'ppds' ? '80mm' : '40mm',
             printerUsed: connectedDevice.name || 'Bluetooth Printer',
             sessionId: logSessionId,
             selectedItems:
@@ -1066,6 +1180,96 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     }
   };
 
+  // Print circular allergen stickers
+  const printCircularAllergenSticker = async (
+    printQueue: any[],
+    customExpiry: Record<string, string>,
+  ) => {
+    if (!connectedDevice) {
+      throw new Error('No device connected');
+    }
+
+    if (!printQueue || printQueue.length === 0) {
+      throw new Error('No items in print queue');
+    }
+
+    try {
+      setIsPrinting(true);
+      console.log('🖨️ Starting circular allergen sticker printing...');
+
+      const {PrintBridge} = NativeModules;
+
+      // Process each item in the queue
+      for (const item of printQueue) {
+        const quantity = item.quantity;
+        const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+
+        console.log(`🖨️ Printing ${quantity} circular stickers for: ${item.name}`);
+
+        // Generate TSPL commands for circular allergen sticker
+        const labelData = {
+          itemName: item.name,
+          allergens: item.allergens || [],
+          expiryDate: finalExpiryDate,
+        };
+
+        const tsplCommands = generateCircularAllergenSticker(labelData, {
+          dpi: 203,
+        });
+
+        // Print the label quantity times
+        for (let i = 0; i < quantity; i++) {
+          console.log(
+            `🖨️ Printing circular sticker ${i + 1}/${quantity} for ${item.name}`,
+          );
+
+          await PrintBridge.printTSPL(tsplCommands);
+
+          // Small delay between prints
+          if (i < quantity - 1) {
+            await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+          }
+        }
+
+        // Log the print action
+        try {
+          const sessionId = apiService.generateSessionId();
+          await apiService.logPrintAction({
+            labelType: 'allergen-sticker',
+            itemId: item.uid || item.id || '',
+            itemName: item.name,
+            quantity: quantity,
+            expiryDate: finalExpiryDate,
+            initial: '',
+            labelHeight: '37mm',
+            printerUsed: connectedDevice.name || 'Bluetooth Printer',
+            sessionId: sessionId,
+            selectedItems: undefined,
+          });
+          console.log(
+            `✅ Circular allergen sticker print action logged for ${item.name}`,
+          );
+        } catch (logError) {
+          console.warn(
+            `⚠️ Failed to log circular allergen sticker print action for ${item.name}:`,
+            logError,
+          );
+        }
+
+        console.log(
+          `✅ Completed printing ${quantity} circular stickers for ${item.name}`,
+        );
+      }
+
+      console.log('✅ Circular allergen sticker printing completed successfully');
+    } catch (error) {
+      console.error('❌ Error in circular allergen sticker printing:', error);
+      throw error;
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
   const value: PrinterContextType = {
     // State
     isBluetoothEnabled,
@@ -1096,6 +1300,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     refreshConnectionStatus,
     printTSPLLabels,
     printSimpleCustomLabel,
+    printCircularAllergenSticker,
 
     // Spooler functions
     addToPrintQueue,

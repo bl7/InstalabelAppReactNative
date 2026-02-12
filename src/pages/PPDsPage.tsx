@@ -480,14 +480,6 @@ const PPDSPage: React.FC = () => {
       return;
     }
 
-    if (!connectedDevice) {
-      showToast.error(
-        'No Printer Connected',
-        'Please connect a printer first from the Connection page.',
-      );
-      return;
-    }
-
     try {
       setIsLoadingPrint(true);
 
@@ -546,11 +538,11 @@ const PPDSPage: React.FC = () => {
       return name.toLowerCase().includes((searchTerm || '').toLowerCase());
     });
 
-    // Sort by name alphabetically
+    // Sort by name alphabetically (case-insensitive)
     filteredItems.sort((a, b) => {
       const aName = a.menuItemName || '';
       const bName = b.menuItemName || '';
-      return aName.localeCompare(bName);
+      return aName.toLowerCase().localeCompare(bName.toLowerCase());
     });
 
     // Calculate pagination
@@ -1002,6 +994,14 @@ const PPDSPage: React.FC = () => {
         </View>
       </View>
 
+      {/* Label Type Reminder */}
+      <View style={styles.labelReminder}>
+        <AlertTriangle size={16} color="#856404" />
+        <Text style={styles.labelReminderText}>
+          Make sure you have 80mm labels for this
+        </Text>
+      </View>
+
       {/* Main Content */}
       <ScrollView
         style={styles.mainScrollView}
@@ -1175,6 +1175,22 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   headerTextContainer: {
+    flex: 1,
+  },
+  labelReminder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3CD',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#FFE69C',
+  },
+  labelReminderText: {
+    fontSize: 14,
+    color: '#856404',
+    fontWeight: '500',
     flex: 1,
   },
   // Stats Section

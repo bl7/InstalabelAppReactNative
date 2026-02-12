@@ -14,6 +14,7 @@ declare module 'react-native' {
       connectToDevice(deviceAddress: string): Promise<boolean>;
       disconnect(): Promise<boolean>;
       printTSPL(tsplCommands: string): Promise<boolean>;
+      printTSPLBase64(tsplBase64: string): Promise<boolean>;
       printESC(escCommands: string): Promise<boolean>;
       printZPL(zplCommands: string): Promise<boolean>;
       getConnectionStatus(): Promise<{

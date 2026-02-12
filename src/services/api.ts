@@ -7,6 +7,7 @@ import {
   ERROR_MESSAGES,
 } from '../config/env';
 import offlineManager from '../utils/offlineManager';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Types for API responses
 export interface LoginRequest {
@@ -919,13 +920,55 @@ class ApiService {
         details: logData,
       };
 
-      await this.postActivityLog(logRequest);
-      console.log(
-        'Print action logged successfully with sessionId:',
-        labelData.sessionId,
-      );
+      // Check if online
+      if (offlineManager.isOnline()) {
+        await this.postActivityLog(logRequest);
+        console.log(
+          'Print action logged successfully with sessionId:',
+          labelData.sessionId,
+        );
+      } else {
+        // Queue for offline sync
+        await offlineManager.queueOfflineLog(logRequest);
+        console.log(
+          'Print action queued for offline sync with sessionId:',
+          labelData.sessionId,
+        );
+      }
     } catch (error) {
       console.error('Failed to log print action:', error);
+
+      // If online request fails, queue for offline sync
+      if (offlineManager.isOnline()) {
+        try {
+          const logData: PrintLabelLog = {
+            labelType: labelData.labelType,
+            itemId: labelData.itemId,
+            itemName: labelData.itemName,
+            quantity: labelData.quantity,
+            printedAt: new Date().toISOString(),
+            expiryDate: labelData.expiryDate,
+            initial: labelData.initial,
+            labelHeight: labelData.labelHeight,
+            printerUsed: labelData.printerUsed,
+            sessionId: labelData.sessionId,
+            selectedItems: labelData.selectedItems,
+          };
+
+          const logRequest: LogRequest = {
+            action: 'print_label',
+            details: logData,
+          };
+
+          await offlineManager.queueOfflineLog(logRequest);
+          console.log(
+            'Print action queued for offline sync after online failure',
+          );
+        } catch (queueError) {
+          console.error('Failed to queue offline log:', queueError);
+        }
+      }
+
       // Don't throw error - logging failure shouldn't stop printing
     }
   }
@@ -933,6 +976,54 @@ class ApiService {
   // Generate session ID for print sessions
   generateSessionId(): string {
     return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  // Sync pending offline logs when network is restored
+  async syncPendingLogs(): Promise<void> {
+    try {
+      const pendingLogs = await offlineManager.getPendingLogs();
+
+      if (pendingLogs.length === 0) {
+        console.log('📝 No pending logs to sync');
+        return;
+      }
+
+      console.log(`📝 Syncing ${pendingLogs.length} pending logs...`);
+
+      const successfulLogs: string[] = [];
+      const failedLogs: any[] = [];
+
+      for (const log of pendingLogs) {
+        try {
+          await this.postActivityLog(log);
+          successfulLogs.push(log.id);
+          console.log(`✅ Synced offline log: ${log.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to sync offline log ${log.id}:`, error);
+          failedLogs.push(log);
+        }
+      }
+
+      // Remove successfully synced logs
+      if (successfulLogs.length > 0) {
+        const remainingLogs = pendingLogs.filter(
+          log => !successfulLogs.includes(log.id),
+        );
+        await AsyncStorage.setItem(
+          'offline_pending_logs',
+          JSON.stringify(remainingLogs),
+        );
+        console.log(`✅ Successfully synced ${successfulLogs.length} logs`);
+      }
+
+      if (failedLogs.length > 0) {
+        console.warn(
+          `⚠️ ${failedLogs.length} logs failed to sync and will be retried later`,
+        );
+      }
+    } catch (error) {
+      console.error('Failed to sync pending logs:', error);
+    }
   }
 
   // Bulk Print API Methods

@@ -24,10 +24,12 @@ import {
 import {usePrinter} from '../PrinterContext';
 import {useAuth} from '../contexts/AuthContext';
 import {useSubscription} from '../contexts/SubscriptionContext';
+import {useMode, LabelMode} from '../contexts/ModeContext';
 import {apiService} from '../services/api';
 import {showToast} from '../utils/toastUtils';
 import LabelSettingsDisplay from '../components/LabelSettingsDisplay';
 import LoadingSpinner from '../components/LoadingSpinner';
+import {FileText, Printer, ShieldAlert} from 'lucide-react-native';
 
 // Conditional import for PermissionsAndroid to handle React Native version differences
 let PermissionsAndroid: any;
@@ -71,6 +73,7 @@ const SettingsPage: React.FC = () => {
     isLoading: isSubscriptionLoading,
     refreshSubscription,
   } = useSubscription();
+  const {selectedMode, setSelectedMode} = useMode();
 
   // Label settings from InstaLabel.co API
   const [labelSettings, setLabelSettings] = useState<Record<string, number>>(
@@ -162,28 +165,39 @@ const SettingsPage: React.FC = () => {
     }
   }, [isAuthenticated]);
 
-  // Request necessary permissions for Android 12+
+  // Request necessary permissions based on Android version
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
       try {
-        const permissions = [
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-        ];
+        const androidVersion = Platform.Version as number;
+        const permissions: string[] = [];
 
-        const results = await PermissionsAndroid.requestMultiple(permissions);
-
-        const allGranted = Object.values(results).every(
-          result => result === PermissionsAndroid.RESULTS.GRANTED,
-        );
-
-        if (!allGranted) {
-          showToast.warning(
-            'Permissions Required',
-            'Bluetooth and location permissions are required for this app to work properly.',
+        // Android 12+ (API 31+) needs BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+        if (androidVersion >= 31) {
+          permissions.push(
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
           );
+        }
+        // Android 10-11 (API 29-30) needs ACCESS_FINE_LOCATION for BLE scanning
+        else if (androidVersion >= 29 && androidVersion <= 30) {
+          permissions.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+        }
+        // Android 9 and below don't need runtime permissions for Bluetooth
+
+        if (permissions.length > 0) {
+          const results = await PermissionsAndroid.requestMultiple(permissions);
+
+          const allGranted = Object.values(results).every(
+            result => result === PermissionsAndroid.RESULTS.GRANTED,
+          );
+
+          if (!allGranted) {
+            showToast.warning(
+              'Permissions Required',
+              'Bluetooth permissions are required for this app to work properly.',
+            );
+          }
         }
       } catch (error) {
         console.error('Error requesting permissions:', error);
@@ -255,6 +269,74 @@ const SettingsPage: React.FC = () => {
       </View>
 
       <ScrollView style={styles.content}>
+        {/* Label Mode Selection */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Label Mode</Text>
+          <Text style={styles.modeDescription}>
+            Switch between different label modes to access relevant tabs.
+          </Text>
+          
+          <View style={styles.modeOptionsContainer}>
+            {[
+              {
+                mode: '40mm' as LabelMode,
+                title: '40mm Labels',
+                icon: FileText,
+                color: '#8A2BE2',
+                description: 'Labels, Bulk, Logs, Settings, Custom',
+              },
+              {
+                mode: '80mm' as LabelMode,
+                title: '80mm Labels',
+                icon: Printer,
+                color: '#4CAF50',
+                description: 'PPDS, Logs, Settings, Custom',
+              },
+              {
+                mode: 'round' as LabelMode,
+                title: 'Round Labels',
+                icon: ShieldAlert,
+                color: '#FF9800',
+                description: 'Stickers, Logs, Settings, Custom',
+              },
+            ].map(({mode, title, icon: IconComponent, color, description}) => (
+              <TouchableOpacity
+                key={mode}
+                style={[
+                  styles.modeOption,
+                  selectedMode === mode && {
+                    borderColor: color,
+                    borderWidth: 2,
+                    backgroundColor: `${color}10`,
+                  },
+                ]}
+                onPress={async () => {
+                  try {
+                    await setSelectedMode(mode);
+                    showToast.success('Mode Changed', `Switched to ${title}`);
+                  } catch (error) {
+                    showToast.error('Error', 'Failed to change mode');
+                  }
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Select ${title} mode`}>
+                <View style={[styles.modeIconContainer, {backgroundColor: `${color}20`}]}>
+                  <IconComponent size={24} color={color} />
+                </View>
+                <View style={styles.modeOptionContent}>
+                  <Text style={[styles.modeOptionTitle, {color}]}>{title}</Text>
+                  <Text style={styles.modeOptionDescription}>{description}</Text>
+                </View>
+                {selectedMode === mode && (
+                  <View style={[styles.modeCheckmark, {backgroundColor: color}]}>
+                    <CheckCircle size={20} color="white" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
         {/* Bluetooth Status */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Bluetooth Status</Text>
@@ -1084,6 +1166,55 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
     color: '#333',
+  },
+  // Mode selection styles
+  modeDescription: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 15,
+    lineHeight: 20,
+  },
+  modeOptionsContainer: {
+    gap: 12,
+  },
+  modeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minHeight: 80,
+  },
+  modeIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  modeOptionContent: {
+    flex: 1,
+  },
+  modeOptionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  modeOptionDescription: {
+    fontSize: 12,
+    color: '#666',
+    lineHeight: 16,
+  },
+  modeCheckmark: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
   },
 });
 

@@ -12,8 +12,10 @@ import {
   Modal,
   ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {useAuth} from '../contexts/AuthContext';
+import {useMode} from '../contexts/ModeContext';
 import {usePrinter} from '../PrinterContext';
 import OfflineIndicator from '../components/OfflineIndicator';
 import offlineManager from '../utils/offlineManager';
@@ -93,6 +95,7 @@ const renderAllergenIcon = (allergen: string, size: number = 12) => {
 
 const LabelsPage: React.FC = () => {
   const {isAuthenticated, user} = useAuth();
+  const {selectedMode} = useMode();
   const {
     connectedDevice,
     isPrinting,
@@ -124,6 +127,15 @@ const LabelsPage: React.FC = () => {
   const [initials, setInitials] = useState('');
   const [availableInitials, setAvailableInitials] = useState<string[]>([]);
   const [isLoadingInitials, setIsLoadingInitials] = useState(false);
+  const [ppdsStorageInstruction, setPpdsStorageInstruction] = useState('');
+  const [showNetWt, setShowNetWt] = useState(false);
+  const [showPrice, setShowPrice] = useState(false);
+  const [netWt, setNetWt] = useState('');
+  const [price, setPrice] = useState('');
+  const [showPpdsSettingsModal, setShowPpdsSettingsModal] = useState(false);
+  const [ppdsSettingsConfirmed, setPpdsSettingsConfirmed] = useState(false);
+  const [pendingPrintAfterPpdsConfirm, setPendingPrintAfterPpdsConfirm] =
+    useState(false);
 
   // Label settings from InstaLabel.co API
   const [labelSettings, setLabelSettings] = useState<Record<string, number>>(
@@ -174,6 +186,8 @@ const LabelsPage: React.FC = () => {
   // Queue modal state
   const [queueModalVisible, setQueueModalVisible] = useState(false);
 
+  const PPDS_SETTINGS_STORAGE_KEY = 'labels_page_ppds_settings_v1';
+
   // Handlers for initials modal
   const handleInitialsSelect = (selectedInitials: string) => {
     if (editingInitialsUid) {
@@ -197,6 +211,49 @@ const LabelsPage: React.FC = () => {
     setShowInitialsModal(false);
     setEditingInitialsUid(null);
   };
+
+  // Load persisted PPDS settings on mount
+  useEffect(() => {
+    const loadPersistedPpdsSettings = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PPDS_SETTINGS_STORAGE_KEY);
+        if (!raw) return;
+
+        const parsed = JSON.parse(raw);
+        setPpdsStorageInstruction(parsed.ppdsStorageInstruction || '');
+        setShowNetWt(!!parsed.showNetWt);
+        setShowPrice(!!parsed.showPrice);
+        setNetWt(parsed.netWt || '');
+        setPrice(parsed.price || '');
+      } catch (error) {
+        console.warn('Failed to load persisted PPDS settings:', error);
+      }
+    };
+
+    loadPersistedPpdsSettings();
+  }, []);
+
+  // Persist PPDS settings whenever they change
+  useEffect(() => {
+    const persistPpdsSettings = async () => {
+      try {
+        await AsyncStorage.setItem(
+          PPDS_SETTINGS_STORAGE_KEY,
+          JSON.stringify({
+            ppdsStorageInstruction,
+            showNetWt,
+            showPrice,
+            netWt,
+            price,
+          }),
+        );
+      } catch (error) {
+        console.warn('Failed to persist PPDS settings:', error);
+      }
+    };
+
+    persistPpdsSettings();
+  }, [ppdsStorageInstruction, showNetWt, showPrice, netWt, price]);
 
   // Load data from API or cache
   const loadData = useCallback(async () => {
@@ -820,14 +877,26 @@ const LabelsPage: React.FC = () => {
         ),
         allergens: detectedAllergens,
         ingredients: ingredientNames, // Store the ingredient names
-        labelHeight: '31mm', // Fixed height
+        labelHeight: selectedMode === '80mm' ? '80mm' : '40mm',
       };
 
       setPrintQueue(prev => [...prev, newItem]);
       // Removed alert to improve UX flow - no need to confirm every addition
     },
-    [ingredients, getExpiryDaysForLabelType],
+    [ingredients, getExpiryDaysForLabelType, selectedMode],
   );
+
+  // Keep queue label-height display aligned with current mode to avoid stale "31mm" metadata
+  useEffect(() => {
+    const expectedHeight = selectedMode === '80mm' ? '80mm' : '40mm';
+    setPrintQueue(prev =>
+      prev.map(item =>
+        item.labelHeight === expectedHeight
+          ? item
+          : {...item, labelHeight: expectedHeight},
+      ),
+    );
+  }, [selectedMode]);
 
   const removeFromQueue = useCallback((uid: string) => {
     if (!uid) {
@@ -1027,19 +1096,36 @@ const LabelsPage: React.FC = () => {
     showToast.success('Queue Cleared', 'Print queue has been cleared');
   }, [printQueue, clearSpoolerQueue]);
 
-  const printLabels = async () => {
+  const hasPPDSInQueue = useMemo(
+    () => printQueue.some(item => item.labelType === 'ppds'),
+    [printQueue],
+  );
+
+  const validatePpdsSettings = useCallback(() => {
+    if (showNetWt && !netWt.trim()) {
+      showToast.error('Missing Net Wt', 'Please enter net weight for PPDS');
+      return false;
+    }
+    if (showPrice && !price.trim()) {
+      showToast.error('Missing Price', 'Please enter price for PPDS');
+      return false;
+    }
+    return true;
+  }, [showNetWt, showPrice, netWt, price]);
+
+  useEffect(() => {
+    if (!hasPPDSInQueue) {
+      setPpdsSettingsConfirmed(false);
+      setPendingPrintAfterPpdsConfirm(false);
+      setShowPpdsSettingsModal(false);
+    }
+  }, [hasPPDSInQueue]);
+
+  const executePrintLabels = useCallback(async () => {
     if (!printQueue || printQueue.length === 0) {
       showToast.error(
         'Empty Queue',
         'Please add items to the print queue first',
-      );
-      return;
-    }
-
-    if (!connectedDevice) {
-      showToast.error(
-        'No Printer Connected',
-        'Please connect a printer first from the Connection page.',
       );
       return;
     }
@@ -1050,17 +1136,24 @@ const LabelsPage: React.FC = () => {
       // Generate session ID for this print job
       const sessionId = apiService.generateSessionId();
 
-      // Use TSPL direct printing instead of image capture
+      // Use TSPL direct printing with server-side rendering (handled in PrinterContext)
       await printTSPLLabels(
         printQueue,
         ingredients,
         menuItems,
         customExpiry,
         useInitials ? initials : '',
-        undefined, // storageInstructions
+        ppdsStorageInstruction || undefined, // storageInstructions
         companyName,
         sessionId, // Pass session ID for logging
-        false, // Use PPD format (60mm × 40mm) for labels page
+        selectedMode === '80mm', // Use 80mm formatters when in 80mm mode
+        {
+          storageInstruction: ppdsStorageInstruction,
+          showNetWt,
+          showPrice,
+          netWt,
+          price,
+        },
       );
 
       showToast.success(
@@ -1080,23 +1173,110 @@ const LabelsPage: React.FC = () => {
     } finally {
       setIsLoadingPrint(false);
     }
+  }, [
+    printQueue,
+    ingredients,
+    menuItems,
+    customExpiry,
+    useInitials,
+    initials,
+    ppdsStorageInstruction,
+    companyName,
+    selectedMode,
+    showNetWt,
+    showPrice,
+    netWt,
+    price,
+    printTSPLLabels,
+  ]);
+
+  const printLabels = async () => {
+    if (hasPPDSInQueue && !ppdsSettingsConfirmed) {
+      setPendingPrintAfterPpdsConfirm(true);
+      setShowPpdsSettingsModal(true);
+      return;
+    }
+    if (hasPPDSInQueue && !validatePpdsSettings()) {
+      setShowPpdsSettingsModal(true);
+      return;
+    }
+    await executePrintLabels();
   };
+
+  const handleConfirmPpdsSettings = async () => {
+    if (!validatePpdsSettings()) return;
+    setPpdsSettingsConfirmed(true);
+    setShowPpdsSettingsModal(false);
+    if (pendingPrintAfterPpdsConfirm) {
+      setPendingPrintAfterPpdsConfirm(false);
+      await executePrintLabels();
+    }
+  };
+
+  const ppdsSummaryText = useMemo(() => {
+    const parts = [
+      ppdsStorageInstruction.trim() ? 'Storage: set' : 'Storage: default',
+      showNetWt ? `Net Wt: ${netWt.trim() || '-'}` : 'Net Wt: off',
+      showPrice ? `Price: ${price.trim() || '-'}` : 'Price: off',
+    ];
+    return parts.join(' | ');
+  }, [ppdsStorageInstruction, showNetWt, showPrice, netWt, price]);
 
   // Memoized expensive calculations
   const filteredIngredients = useMemo(() => {
-    if (!searchTerm.trim()) return ingredients;
-    return ingredients.filter(ingredient =>
-      ingredient.ingredientName
+    let filtered = ingredients;
+    if (searchTerm.trim()) {
+      filtered = ingredients.filter(ingredient =>
+        ingredient.ingredientName
+          .toLowerCase()
+          .includes(searchTerm.toLowerCase()),
+      );
+    }
+    // Sort alphabetically by ingredient name
+    const sorted = filtered.sort((a, b) =>
+      a.ingredientName
         .toLowerCase()
-        .includes(searchTerm.toLowerCase()),
+        .localeCompare(b.ingredientName.toLowerCase()),
     );
+
+    // Debug logging - check if sorting is working
+    if (sorted.length > 0) {
+      console.log('🔍 Ingredients sorting check:', {
+        first: sorted[0]?.ingredientName,
+        last: sorted[sorted.length - 1]?.ingredientName,
+        isAlphabetical:
+          sorted[0]?.ingredientName?.toLowerCase() <=
+          sorted[sorted.length - 1]?.ingredientName?.toLowerCase(),
+      });
+    }
+
+    return sorted;
   }, [ingredients, searchTerm]);
 
   const filteredMenuItems = useMemo(() => {
-    if (!searchTerm.trim()) return menuItems;
-    return menuItems.filter(item =>
-      item.menuItemName.toLowerCase().includes(searchTerm.toLowerCase()),
+    let filtered = menuItems;
+    if (searchTerm.trim()) {
+      filtered = menuItems.filter(item =>
+        item.menuItemName.toLowerCase().includes(searchTerm.toLowerCase()),
+      );
+    }
+    // Sort alphabetically by menu item name
+    const sorted = filtered.sort((a, b) =>
+      a.menuItemName.toLowerCase().localeCompare(b.menuItemName.toLowerCase()),
     );
+
+    // Debug logging - check if sorting is working
+    if (sorted.length > 0) {
+      console.log('🔍 Menu items sorting check:', {
+        first: sorted[0]?.menuItemName,
+        last: sorted[sorted.length - 1]?.menuItemName,
+        isAlphabetical:
+          sorted[0]?.menuItemName?.toLowerCase() <=
+          sorted[sorted.length - 1]?.menuItemName?.toLowerCase(),
+      });
+    }
+
+    return sorted;
   }, [menuItems, searchTerm]);
 
   const paginatedIngredients = useMemo(() => {
@@ -1549,6 +1729,119 @@ const LabelsPage: React.FC = () => {
         </View>
       </Modal>
 
+      {/* PPDS Settings Modal (shown only when PPDS items are in queue) */}
+      <Modal
+        visible={showPpdsSettingsModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowPpdsSettingsModal(false);
+          setPendingPrintAfterPpdsConfirm(false);
+        }}>
+        <View style={styles.ppdsModalOverlay}>
+          <View style={styles.ppdsModalContainer}>
+            <Text style={styles.ppdsModalTitle}>PPDS Fields</Text>
+            <Text style={styles.ppdsModalSubtitle}>
+              Applies to PPDS labels in this print run
+            </Text>
+
+            <TextInput
+              style={styles.ppdsStorageInput}
+              placeholder="Storage instruction (e.g. Keep refrigerated below 5C)"
+              placeholderTextColor="#9aa0ad"
+              value={ppdsStorageInstruction}
+              onChangeText={text => {
+                setPpdsStorageInstruction(text);
+                setPpdsSettingsConfirmed(false);
+              }}
+            />
+
+            <View style={styles.ppdsToggleRow}>
+              <TouchableOpacity
+                style={styles.ppdsToggleButton}
+                onPress={() => {
+                  setShowNetWt(prev => !prev);
+                  setPpdsSettingsConfirmed(false);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Toggle net weight">
+                <View
+                  style={[
+                    styles.ppdsCheckbox,
+                    showNetWt && styles.ppdsCheckboxOn,
+                  ]}>
+                  {showNetWt && <Text style={styles.ppdsCheckboxTick}>✓</Text>}
+                </View>
+                <Text style={styles.ppdsToggleText}>Show Net Wt</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ppdsToggleButton}
+                onPress={() => {
+                  setShowPrice(prev => !prev);
+                  setPpdsSettingsConfirmed(false);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Toggle price">
+                <View
+                  style={[
+                    styles.ppdsCheckbox,
+                    showPrice && styles.ppdsCheckboxOn,
+                  ]}>
+                  {showPrice && <Text style={styles.ppdsCheckboxTick}>✓</Text>}
+                </View>
+                <Text style={styles.ppdsToggleText}>Show Price</Text>
+              </TouchableOpacity>
+            </View>
+
+            {(showNetWt || showPrice) && (
+              <View style={styles.ppdsValueRow}>
+                {showNetWt && (
+                  <TextInput
+                    style={styles.ppdsValueInput}
+                    placeholder="Net Wt (e.g. 220g)"
+                    placeholderTextColor="#9aa0ad"
+                    value={netWt}
+                    onChangeText={text => {
+                      setNetWt(text);
+                      setPpdsSettingsConfirmed(false);
+                    }}
+                  />
+                )}
+                {showPrice && (
+                  <TextInput
+                    style={styles.ppdsValueInput}
+                    placeholder="Price (e.g. £4.99)"
+                    placeholderTextColor="#9aa0ad"
+                    value={price}
+                    onChangeText={text => {
+                      setPrice(text);
+                      setPpdsSettingsConfirmed(false);
+                    }}
+                  />
+                )}
+              </View>
+            )}
+
+            <View style={styles.ppdsModalActions}>
+              <TouchableOpacity
+                style={styles.ppdsModalCancelButton}
+                onPress={() => {
+                  setShowPpdsSettingsModal(false);
+                  setPendingPrintAfterPpdsConfirm(false);
+                }}>
+                <Text style={styles.ppdsModalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.ppdsModalConfirmButton}
+                onPress={handleConfirmPpdsSettings}>
+                <Text style={styles.ppdsModalConfirmText}>OK</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Labels Header */}
       <View style={styles.labelsHeader}>
         <View style={styles.headerContent}>
@@ -1673,6 +1966,20 @@ const LabelsPage: React.FC = () => {
 
       {/* Persistent Footer with Clear, Print All, and FAB */}
       <View style={styles.footerContainer}>
+        {hasPPDSInQueue && (
+          <View style={styles.ppdsSummaryBar}>
+            <Text style={styles.ppdsSummaryText} numberOfLines={1}>
+              {ppdsSummaryText}
+            </Text>
+            <TouchableOpacity
+              style={styles.ppdsSummaryEditButton}
+              onPress={() => setShowPpdsSettingsModal(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Edit PPDS fields">
+              <Text style={styles.ppdsSummaryEditText}>Edit</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <View style={styles.footerContent}>
           <TouchableOpacity
             style={styles.footerClearButton}
@@ -1875,6 +2182,164 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     marginBottom: 0,
     borderBottomWidth: 0,
+  },
+  ppdsSummaryBar: {
+    minHeight: 44,
+    borderRadius: 10,
+    backgroundColor: '#f3ebff',
+    borderWidth: 1,
+    borderColor: '#d7c3f8',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  ppdsSummaryText: {
+    flex: 1,
+    color: '#3f3260',
+    fontSize: 13,
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  ppdsSummaryEditButton: {
+    minHeight: 44,
+    minWidth: 52,
+    borderRadius: 8,
+    backgroundColor: '#8A2BE2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  ppdsSummaryEditText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  ppdsModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  ppdsModalContainer: {
+    width: '90%',
+    maxWidth: 420,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+  },
+  ppdsModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2f3747',
+  },
+  ppdsModalSubtitle: {
+    marginTop: 4,
+    marginBottom: 12,
+    fontSize: 14,
+    color: '#6a7384',
+  },
+  ppdsStorageInput: {
+    borderWidth: 1,
+    borderColor: '#cfd5df',
+    borderRadius: 10,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 16,
+    color: '#2f3747',
+    marginBottom: 12,
+    backgroundColor: '#fff',
+  },
+  ppdsToggleRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  ppdsToggleButton: {
+    flex: 1,
+    minHeight: 46,
+    borderWidth: 1,
+    borderColor: '#cfd5df',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  ppdsCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#8d95a6',
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ppdsCheckboxOn: {
+    borderColor: '#8A2BE2',
+    backgroundColor: '#8A2BE2',
+  },
+  ppdsCheckboxTick: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  ppdsToggleText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#2f3747',
+  },
+  ppdsValueRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  ppdsValueInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#cfd5df',
+    borderRadius: 10,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 16,
+    color: '#2f3747',
+    backgroundColor: '#fff',
+  },
+  ppdsModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  ppdsModalCancelButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d8dde7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  ppdsModalCancelText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#4a5568',
+  },
+  ppdsModalConfirmButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#8A2BE2',
+  },
+  ppdsModalConfirmText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
   },
   tab: {
     flex: 1,

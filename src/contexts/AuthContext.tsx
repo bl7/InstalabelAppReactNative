@@ -86,6 +86,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({children}) => {
           await apiService.getIngredients();
           console.log('✅ Background token validation successful');
           setIsOfflineMode(false);
+
+          // Sync any pending offline logs on successful connection
+          try {
+            await apiService.syncPendingLogs();
+            console.log('✅ Pending logs synced on app startup');
+          } catch (syncError) {
+            console.warn(
+              '⚠️ Failed to sync pending logs on startup:',
+              syncError,
+            );
+          }
         } catch (error) {
           console.warn('⚠️ Background token validation failed (offline mode)');
           console.log('ℹ️ User can still access app with stored data');
@@ -160,6 +171,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({children}) => {
             });
           } catch (error) {
             console.error('Error clearing offline manager caches:', error);
+          }
+
+          // Sync pending offline logs
+          try {
+            apiService.syncPendingLogs().catch(error => {
+              console.error('Error syncing pending logs:', error);
+            });
+          } catch (error) {
+            console.error('Error syncing pending logs:', error);
           }
         }
         // Immediately reset offline mode if we have a good connection

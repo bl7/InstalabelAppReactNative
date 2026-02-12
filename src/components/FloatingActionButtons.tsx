@@ -24,7 +24,13 @@ import {
 } from 'lucide-react-native';
 import {usePrinter} from '../PrinterContext';
 import {useSubscription} from '../contexts/SubscriptionContext';
-import {generateUseFirstLabel, generateDefrostLabel} from '../../tsplUtils';
+import {useMode} from '../contexts/ModeContext';
+import {
+  generateUseFirstLabel,
+  generateUseFirstLabel80mm,
+  generateDefrostLabel,
+  generateDefrostLabel80mm,
+} from '../../tsplUtils';
 import {apiService, Ingredient} from '../services/api';
 import LoadingSpinner from './LoadingSpinner';
 
@@ -44,6 +50,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
   const [quantity, setQuantity] = useState('1');
   const {connectedDevice, printTSPLLabels} = usePrinter();
   const {canPrint, blockedMessage, subscriptionInfo} = useSubscription();
+  const {selectedMode} = useMode();
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [showActions, setShowActions] = useState(false);
 
@@ -85,14 +92,20 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
 
   // Filter ingredients based on search term
   const filteredIngredients = useMemo(() => {
+    let filtered = ingredients;
     if (searchTerm.trim()) {
-      return ingredients.filter(ingredient =>
+      filtered = ingredients.filter(ingredient =>
         ingredient.ingredientName
           .toLowerCase()
           .includes(searchTerm.toLowerCase()),
       );
     }
-    return ingredients;
+    // Sort alphabetically by ingredient name
+    return filtered.sort((a, b) =>
+      a.ingredientName
+        .toLowerCase()
+        .localeCompare(b.ingredientName.toLowerCase()),
+    );
   }, [searchTerm, ingredients]);
 
   // Reset to first page when searching
@@ -262,7 +275,10 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
       // Print each selected ingredient
       for (const ingredient of selectedIngredientsData) {
         // Generate TSPL commands for defrost label
-        const tsplCommands = generateDefrostLabel(ingredient);
+        const tsplCommands =
+          selectedMode === '80mm'
+            ? generateDefrostLabel80mm(ingredient)
+            : generateDefrostLabel(ingredient);
 
         // Print the label
         await PrintBridge.printTSPL(tsplCommands);
@@ -285,7 +301,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
               60 *
               1000,
         ).toISOString(),
-        labelHeight: '40mm',
+        labelHeight: selectedMode === '80mm' ? '80mm' : '40mm',
         printerUsed: connectedDevice.name || 'Unknown Printer',
         sessionId: sessionId,
         selectedItems: selectedIngredientsData.map(ingredient => {
@@ -340,7 +356,10 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
       const sessionId = apiService.generateSessionId();
 
       // Generate TSPL commands for USE FIRST labels
-      const tsplCommands = generateUseFirstLabel(numQuantity);
+      const tsplCommands =
+        selectedMode === '80mm'
+          ? generateUseFirstLabel80mm(numQuantity)
+          : generateUseFirstLabel(numQuantity);
 
       // Print the labels using PrintBridge directly
       const {PrintBridge} = require('react-native').NativeModules;

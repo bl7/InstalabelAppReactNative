@@ -10,7 +10,8 @@ export type LabelType =
   | 'use-first'
   | 'defrost'
   | 'default'
-  | 'etc';
+  | 'etc'
+  | 'allergen-sticker';
 export type LabelHeight = '31mm' | '40mm' | '56mm' | '80mm';
 
 // Label type configuration
@@ -43,7 +44,7 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     type: 'prep',
     name: 'Prep',
     description: 'For prepared items stored in advance',
-    defaultExpiryDays: 3,
+    defaultExpiryDays: 1,
     format: 'expires',
     showPrintedDate: true,
     showIngredients: true,
@@ -54,7 +55,7 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     type: 'ppds',
     name: 'PPDS',
     description: 'Pre-Packaged for Direct Sale (UK compliance)',
-    defaultExpiryDays: 5,
+    defaultExpiryDays: 1,
     format: 'best-before',
     showPrintedDate: false,
     showIngredients: true,
@@ -65,7 +66,7 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     type: 'ppd',
     name: 'PPD',
     description: 'Pre-Packaged for Direct Sale (simplified)',
-    defaultExpiryDays: 5,
+    defaultExpiryDays: 1,
     format: 'best-before',
     showPrintedDate: false,
     showIngredients: true,
@@ -115,6 +116,17 @@ export const LABEL_TYPE_CONFIGS: Record<LabelType, LabelTypeConfig> = {
     showIngredients: true,
     showAllergens: true,
     specialIndicators: [], // No special indicators for default type
+  },
+  'allergen-sticker': {
+    type: 'allergen-sticker',
+    name: 'Allergen Sticker',
+    description: 'Circular allergen warning sticker with expiry date',
+    defaultExpiryDays: 1,
+    format: 'expires',
+    showPrintedDate: false,
+    showIngredients: false,
+    showAllergens: true,
+    specialIndicators: [],
   },
 };
 

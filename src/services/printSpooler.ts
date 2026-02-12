@@ -834,6 +834,27 @@ class PrintSpooler {
           });
 
           console.log(`✅ Native image printing completed on ${printer.name}`);
+
+          // Log the print action if metadata is available
+          if (labelData.metadata) {
+            try {
+              const {apiService} = require('../services/api');
+              await apiService.logPrintAction({
+                labelType: labelData.metadata.labelType,
+                itemId: labelData.metadata.itemId,
+                itemName: labelData.metadata.itemName,
+                quantity: 1, // Log each individual print
+                expiryDate: labelData.metadata.expiryDate,
+                initial: labelData.metadata.initial,
+                labelHeight: labelData.metadata.labelHeight,
+                printerUsed: printer.name,
+                sessionId: labelData.sessionId,
+              });
+            } catch (logError) {
+              console.warn('Failed to log optimized print action:', logError);
+              // Continue printing even if logging fails
+            }
+          }
         } catch (nativeError) {
           console.error(
             `❌ Native image processing failed on ${printer.name}:`,
