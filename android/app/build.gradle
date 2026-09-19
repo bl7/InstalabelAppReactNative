@@ -110,6 +110,12 @@ android {
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['libs/rongta/jniLibs']
+        }
+    }
 }
 
 
@@ -118,6 +124,9 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
     implementation("com.facebook.react:flipper-integration")
+
+    // Official Rongta RTPrinterSDK (Thermal Printer & Label Printer Android SDK)
+    implementation files('libs/rongta/printer_library.jar')
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

@@ -825,6 +825,24 @@ class PrintSpooler {
 
           // Print using native image processing
           await new Promise<void>((resolve, reject) => {
+            const {isRongtaPrinterName} = require('../utils/rongtaPrinter');
+            const {getRongtaPrintBridge} = require('../utils/rongtaPrintBridge');
+            const RongtaPrintBridge = getRongtaPrintBridge();
+            if (
+              isRongtaPrinterName(printer.name) &&
+              RongtaPrintBridge
+            ) {
+              RongtaPrintBridge.printBitmapFile(
+                imagePath,
+                labelData.labelWidth || 60,
+                labelData.labelHeight || 40,
+                1,
+              )
+                .then(() => resolve())
+                .catch(reject);
+              return;
+            }
+
             PrintBridge.printImageFromFile(
               imagePath,
               labelData.labelWidth || 60,

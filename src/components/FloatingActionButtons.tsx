@@ -271,8 +271,6 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
       });
 
       // Generate and print defrost labels
-      const {PrintBridge} = require('react-native').NativeModules;
-
       // Print each selected ingredient
       for (const ingredient of selectedIngredientsData) {
         // Generate TSPL commands for defrost label
@@ -281,8 +279,9 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
             ? generateDefrostLabel80mm(ingredient)
             : generateDefrostLabel(ingredient);
 
-        // Print the label
-        await PrintBridge.printTSPL(tsplCommands);
+        // Print the label (Rongta auto-routes via TSPL raster → ZPL bitmap)
+        const {sendTsplPrint} = require('../utils/sendTsplPrint');
+        await sendTsplPrint(tsplCommands, connectedDevice.name);
 
         // Small delay between prints
         await new Promise<void>(resolve => setTimeout(resolve, 500));
@@ -368,12 +367,12 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
           ? generateUseFirstLabel80mm(numQuantity)
           : generateUseFirstLabel(numQuantity);
 
-      // Print the labels using PrintBridge directly
-      const {PrintBridge} = require('react-native').NativeModules;
+      // Print the labels (Rongta auto-routes via TSPL raster → ZPL bitmap)
+      const {sendTsplPrint} = require('../utils/sendTsplPrint');
 
       // Print the label quantity times
       for (let i = 0; i < numQuantity; i++) {
-        await PrintBridge.printTSPL(tsplCommands);
+        await sendTsplPrint(tsplCommands, connectedDevice.name);
 
         // Small delay between prints to prevent buffer overflow
         if (i < numQuantity - 1) {

@@ -13,3 +13,7 @@
 -keep class com.facebook.react.** { *; }
 -keep class com.facebook.hermes.** { *; }
 -keep class com.facebook.jni.** { *; }
+
+# Official Rongta RTPrinterSDK
+-keep class com.rt.printerlibrary.** { *; }
+-dontwarn com.rt.printerlibrary.**

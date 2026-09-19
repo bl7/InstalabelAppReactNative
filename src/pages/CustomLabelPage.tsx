@@ -221,22 +221,18 @@ const CustomLabelPage: React.FC = () => {
               density: 8,
             });
 
-      // Send to printer using PrintBridge
-      const {PrintBridge} = require('react-native').NativeModules;
-      const result = await PrintBridge.printTSPL(tsplCommands);
+      // Send to printer (Rongta auto-routes via TSPL raster → ZPL bitmap)
+      const {sendTsplPrint} = require('../utils/sendTsplPrint');
+      await sendTsplPrint(tsplCommands, connectedDevice?.name);
 
-      if (result.success) {
-        showToast.success(
-          'Simple Label Printed',
-          'Your simple label has been sent to the printer',
-        );
+      showToast.success(
+        'Simple Label Printed',
+        'Your simple label has been sent to the printer',
+      );
 
-        // Clear form
-        setHeading('');
-        setSubheading('');
-      } else {
-        throw new Error(result.error || 'Unknown print error');
-      }
+      // Clear form
+      setHeading('');
+      setSubheading('');
     } catch (error) {
       console.error('Print error:', error);
       showToast.error(

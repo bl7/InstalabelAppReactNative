@@ -25,6 +25,9 @@ import {generateTSCLabelContent} from './utils/labelManagement';
 import PrintSpooler, {PrintJob} from './services/printSpooler';
 import {apiService} from './services/api';
 import {validateSubscriptionForPrint} from './utils/subscriptionPrintGate';
+import {isRongtaPrinterName} from './utils/rongtaPrinter';
+import {getRongtaPrintBridge} from './utils/rongtaPrintBridge';
+import {sendTsplPrint} from './utils/sendTsplPrint';
 
 // Conditional import for NativeModules to handle React Native version differences
 let NativeModules: any;
@@ -347,6 +350,33 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       setIsConnecting(true);
       console.log('Attempting to connect to device:', device.address);
 
+      const useRongta = isRongtaPrinterName(device.name);
+      const RongtaPrintBridge = getRongtaPrintBridge();
+
+      if (useRongta && RongtaPrintBridge) {
+        console.log('🖨️ Rongta printer detected — using official Rongta SDK');
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`Rongta connection attempt ${attempt}/3`);
+            await RongtaPrintBridge.connect(device.address);
+            console.log('Successfully connected via Rongta SDK:', device.address);
+            setConnectedDevice(device);
+            return;
+          } catch (error) {
+            console.error(`Rongta connection attempt ${attempt} failed:`, error);
+            lastError = error;
+            if (attempt < 3) {
+              await new Promise<void>(resolve =>
+                setTimeout(() => resolve(), 1000),
+              );
+            }
+          }
+        }
+        setConnectedDevice(null);
+        throw lastError || new Error('Failed to connect Rongta after 3 attempts');
+      }
+
       const {PrintBridge} = NativeModules;
       if (!PrintBridge) {
         throw new Error('PrintBridge native module not found');
@@ -392,12 +422,16 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   const disconnectDevice = async () => {
     try {
       console.log('Attempting to disconnect device');
-      const {PrintBridge} = NativeModules;
-      if (!PrintBridge) {
-        throw new Error('PrintBridge native module not found');
+      const RongtaPrintBridge = getRongtaPrintBridge();
+      if (isRongtaPrinterName(connectedDevice?.name) && RongtaPrintBridge) {
+        await RongtaPrintBridge.disconnect();
+      } else {
+        const {PrintBridge} = NativeModules;
+        if (!PrintBridge) {
+          throw new Error('PrintBridge native module not found');
+        }
+        await PrintBridge.disconnect();
       }
-
-      await PrintBridge.disconnect();
       console.log('Successfully disconnected device');
       setConnectedDevice(null);
     } catch (error) {
@@ -841,7 +875,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             `🖨️ Printing label ${i + 1}/${quantity} for ${item.name}`,
           );
 
-          await PrintBridge.printTSPL(tsplCommands);
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
 
           // Small delay between prints to prevent buffer overflow
           if (i < quantity - 1) {
@@ -929,8 +963,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           console.log('📝 Generated TSPL commands:', tsplCommands);
           console.log('📏 TSPL commands length:', tsplCommands.length);
 
-          await PrintBridge.printTSPL(tsplCommands);
-          console.log('✅ PrintBridge.printTSPL completed successfully');
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
+          console.log('✅ Print completed successfully');
         } catch (error) {
           console.error('❌ Error in actualPrintFunction:', error);
           console.error('❌ Label data:', JSON.stringify(labelData, null, 2));
@@ -1160,7 +1194,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       );
       console.log('📏 TSPL commands length:', tsplCommands.length);
 
-      await PrintBridge.printTSPL(tsplCommands);
+      await sendTsplPrint(tsplCommands, connectedDevice.name);
       console.log('✅ Simple custom label printed successfully');
 
       // Log the print action to backend for tracking/auditing
@@ -1265,7 +1299,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             `🖨️ Printing circular sticker ${i + 1}/${quantity} for ${item.name}`,
           );
 
-          await PrintBridge.printTSPL(tsplCommands);
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
 
           // Small delay between prints
           if (i < quantity - 1) {
