@@ -33,7 +33,9 @@ export const ModeProvider: React.FC<ModeProviderProps> = ({children}) => {
     const loadMode = async () => {
       try {
         const storedMode = await AsyncStorage.getItem(STORAGE_KEY);
-        if (storedMode && (storedMode === '40mm' || storedMode === '80mm' || storedMode === 'round')) {
+        if (storedMode === 'round') {
+          await AsyncStorage.removeItem(STORAGE_KEY);
+        } else if (storedMode === '40mm' || storedMode === '80mm') {
           setSelectedModeState(storedMode as LabelMode);
         }
       } catch (error) {

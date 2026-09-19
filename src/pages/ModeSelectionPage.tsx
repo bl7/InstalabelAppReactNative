@@ -8,7 +8,7 @@ import {
   StatusBar,
   Image,
 } from 'react-native';
-import {FileText, Printer, ShieldAlert} from 'lucide-react-native';
+import {FileText, Printer} from 'lucide-react-native';
 import {useMode} from '../contexts/ModeContext';
 import {LabelMode} from '../contexts/ModeContext';
 
@@ -38,13 +38,13 @@ const ModeSelectionPage: React.FC = () => {
       icon: Printer,
       color: '#4CAF50',
     },
-    {
-      id: 'round' as LabelMode,
-      title: 'Round Labels',
-      description: 'Access to Stickers, Logs, Settings, and Custom tabs',
-      icon: ShieldAlert,
-      color: '#FF9800',
-    },
+    // {
+    //   id: 'round' as LabelMode,
+    //   title: 'Round Labels',
+    //   description: 'Access to Stickers, Logs, Settings, and Custom tabs',
+    //   icon: ShieldAlert,
+    //   color: '#FF9800',
+    // },
   ];
 
   return (

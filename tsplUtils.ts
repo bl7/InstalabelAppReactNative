@@ -3168,6 +3168,7 @@ export const generateCircularAllergenSticker = (
     itemName: string;
     allergens: string[];
     expiryDate: string;
+    ingredientsLine?: string;
   },
   config: Partial<TSPLConfig> = {},
 ): string => {
@@ -3181,10 +3182,12 @@ export const generateCircularAllergenSticker = (
   tspl += `DIRECTION ${direction}\n`;
   tspl += 'CLS\n';
 
-  // Using 203 DPI: 50mm = ~400 dots
+  // Using 203 DPI: 50mm = ~400 dots. Use narrower effective width to shift content further left (fix right cutoff).
   const labelWidth = 400;
+  const effectiveLabelWidth = 320;
   const labelHeight = 400;
   const centerX = labelWidth / 2;
+  const leftOffset = Math.floor((labelWidth - effectiveLabelWidth) / 2) - 5; // shift all text left (+ half char)
 
   // Format expiry date to DD/MM/YYYY
   let formattedDate = labelData.expiryDate || '';
@@ -3217,116 +3220,121 @@ export const generateCircularAllergenSticker = (
     // Keep original date string if parsing fails
   }
 
-  // Format allergens - combine with commas, uppercase
-  const allergenText = labelData.allergens && labelData.allergens.length > 0
-    ? labelData.allergens.map(a => a.toUpperCase()).join(', ')
-    : 'NO ALLERGENS';
-
   // ===== Item Name Section (Top) =====
-  // Use Font 3×2 for large, bold item name
+  // Big font (3×2): only ~10 chars fit per line. If >20 chars, use small font and fit in 2 lines.
   const itemName = labelData.itemName.toUpperCase();
-  
-  // Calculate if item name needs wrapping
-  const itemNameCharWidth = 10 * 2; // Font 3×2 = 20 dots per character
-  const maxItemNameChars = Math.floor((labelWidth - 40) / itemNameCharWidth); // Leave 20 dots margin each side
-  
+  const BIG_FONT_MAX_CHARS = 10;
+  const SMALL_FONT_MAX_CHARS = 18;
+
   let itemNameLines: string[] = [];
-  if (itemName.length <= maxItemNameChars) {
-    // Single line
+  let useSmallItemFont: boolean;
+
+  if (itemName.length <= BIG_FONT_MAX_CHARS) {
     itemNameLines = [itemName];
-  } else {
-    // Wrap to 2 lines
+    useSmallItemFont = false;
+  } else if (itemName.length <= 20) {
+    // 2 lines, max 10 chars per line (word wrap then hard break)
     const words = itemName.split(' ');
     let line1 = '';
     let line2 = '';
-    
     for (const word of words) {
-      if ((line1 + ' ' + word).trim().length <= maxItemNameChars) {
-        line1 += (line1 ? ' ' : '') + word;
+      const candidate = (line1 + (line1 ? ' ' : '') + word).trim();
+      if (candidate.length <= BIG_FONT_MAX_CHARS) {
+        line1 = candidate;
       } else {
-        line2 = words.slice(words.indexOf(word)).join(' ');
+        line2 = words.slice(words.indexOf(word)).join(' ').trim();
         break;
       }
     }
-    
     if (!line2 && line1) {
-      // Force split at middle if no natural break
-      const mid = Math.ceil(itemName.length / 2);
-      line1 = itemName.substring(0, mid);
-      line2 = itemName.substring(mid);
+      line1 = itemName.substring(0, BIG_FONT_MAX_CHARS).trim();
+      line2 = itemName.substring(BIG_FONT_MAX_CHARS).trim();
     }
-    
-    itemNameLines = [line1.trim(), line2.trim()].filter(Boolean);
+    if (line1.length > BIG_FONT_MAX_CHARS) {
+      line1 = line1.substring(0, BIG_FONT_MAX_CHARS);
+      line2 = (line1.length ? itemName.substring(line1.length) : itemName).trim();
+    }
+    itemNameLines = [line1, line2].filter(Boolean);
+    useSmallItemFont = false;
+  } else {
+    // >20 chars: small font, 2 lines
+    useSmallItemFont = true;
+    const words = itemName.split(' ');
+    let line1 = '';
+    let line2 = '';
+    for (const word of words) {
+      const candidate = (line1 + (line1 ? ' ' : '') + word).trim();
+      if (candidate.length <= SMALL_FONT_MAX_CHARS) {
+        line1 = candidate;
+      } else {
+        line2 = words.slice(words.indexOf(word)).join(' ').trim();
+        break;
+      }
+    }
+    if (!line2 && line1) {
+      const mid = Math.ceil(itemName.length / 2);
+      line1 = itemName.substring(0, mid).trim();
+      line2 = itemName.substring(mid).trim();
+    }
+    if (line1.length > SMALL_FONT_MAX_CHARS) {
+      line1 = line1.substring(0, SMALL_FONT_MAX_CHARS);
+      line2 = itemName.substring(line1.length).trim();
+    }
+    if (line2.length > SMALL_FONT_MAX_CHARS) {
+      line2 = line2.substring(0, SMALL_FONT_MAX_CHARS);
+    }
+    itemNameLines = [line1, line2].filter(Boolean).slice(0, 2);
   }
 
-  // Print item name - centered
-  const itemNameStartY = 40; // Start 40 dots from top
+  const itemFontScale = useSmallItemFont ? 1 : 2;
+  const itemLineSpacing = useSmallItemFont ? 28 : 40;
+  const itemNameStartY = 60;
   itemNameLines.forEach((line, index) => {
-    const lineX = centerText(labelWidth, line, 3, 2);
-    const lineY = itemNameStartY + index * 40; // 40 dots spacing between lines (32 height + 8 spacing)
-    tspl += `TEXT ${lineX},${lineY},"3",0,2,2,"${line}"\n`;
+    const lineX = leftOffset + centerText(effectiveLabelWidth, line, 3, itemFontScale);
+    const lineY = itemNameStartY + index * itemLineSpacing;
+    tspl += `TEXT ${lineX},${lineY},"3",0,${itemFontScale},${itemFontScale},"${line}"\n`;
   });
 
-  const itemNameEndY = itemNameStartY + itemNameLines.length * 40;
+  const itemNameEndY = itemNameStartY + itemNameLines.length * itemLineSpacing;
 
-  // ===== First Separator Line =====
-  const separator1Y = itemNameEndY + 15; // 15 dots below item name
-  const separatorMargin = 30; // 30 dots margin from edges
-  tspl += `LINE ${separatorMargin},${separator1Y},${labelWidth - separatorMargin},${separator1Y},2\n`;
-
-  // ===== Contains Section =====
-  const containsStartY = separator1Y + 20; // 20 dots below separator
-  
-  // "Contains:" label
-  const containsLabelX = centerText(labelWidth, 'Contains:', 3, 1);
-  tspl += `TEXT ${containsLabelX},${containsStartY},"3",0,1,1,"Contains:"\n`;
-
-  // Allergen text - wrap if needed
-  const allergenCharWidth = 10; // Font 3×1 = 10 dots per character
-  const maxAllergenChars = Math.floor((labelWidth - 40) / allergenCharWidth);
-  
-  let allergenLines: string[] = [];
-  if (allergenText.length <= maxAllergenChars) {
-    allergenLines = [allergenText];
-  } else {
-    // Word wrap allergens
-    const words = allergenText.split(', ');
-    let currentLine = '';
-    
-    words.forEach((word, index) => {
-      const testLine = currentLine + (currentLine ? ', ' : '') + word;
-      if (testLine.length <= maxAllergenChars) {
-        currentLine = testLine;
-      } else {
-        if (currentLine) allergenLines.push(currentLine);
-        currentLine = word;
-      }
-    });
-    if (currentLine) allergenLines.push(currentLine);
+  // ===== Ingredients Section =====
+  let ingredientsText = '';
+  if (labelData.ingredientsLine && labelData.ingredientsLine.trim().length > 0) {
+    ingredientsText = `Ingredients: ${labelData.ingredientsLine}`;
   }
 
-  // Print allergen lines - centered
-  allergenLines.forEach((line, index) => {
-    const lineX = centerText(labelWidth, line, 3, 1);
-    const lineY = containsStartY + 25 + index * 20; // 25 dots below "Contains:", 20 dots per line
+  const maxIngredientsChars = 22;
+  const words = ingredientsText.split(' ');
+  const ingredientLines: string[] = [];
+  let currentLine = '';
+
+  words.forEach(word => {
+    const testLine = currentLine + (currentLine ? ' ' : '') + word;
+    if (testLine.length <= maxIngredientsChars) {
+      currentLine = testLine;
+    } else {
+      if (currentLine) {
+        ingredientLines.push(currentLine.trim());
+      }
+      currentLine = word;
+    }
+  });
+  if (currentLine) {
+    ingredientLines.push(currentLine.trim());
+  }
+
+  const ingredientsStartY = itemNameEndY + 25;
+  ingredientLines.forEach((line, index) => {
+    const lineX = leftOffset + centerText(effectiveLabelWidth, line, 3, 1);
+    const lineY = ingredientsStartY + index * 22;
     tspl += `TEXT ${lineX},${lineY},"3",0,1,1,"${line}"\n`;
   });
 
-  const containsEndY = containsStartY + 25 + allergenLines.length * 20;
-
-  // ===== Second Separator Line =====
-  const separator2Y = containsEndY + 15; // 15 dots below allergens
-  tspl += `LINE ${separatorMargin},${separator2Y},${labelWidth - separatorMargin},${separator2Y},2\n`;
-
-  // ===== Use By Date Section (Bottom) =====
-  const useByStartY = separator2Y + 20; // 20 dots below separator
-  
-  // "Use By:" label
-  const useByLabelX = centerText(labelWidth, 'Use By:', 3, 1);
-  tspl += `TEXT ${useByLabelX},${useByStartY},"3",0,1,1,"Use By:"\n`;
-
-  // Date value
-  const dateX = centerText(labelWidth, formattedDate, 3, 1);
+  // ===== Best Before Date Section (Bottom) =====
+  const useByStartY = ingredientsStartY + ingredientLines.length * 22 + 35;
+  const useByLabelX = leftOffset + centerText(effectiveLabelWidth, 'Best Before:', 3, 1);
+  tspl += `TEXT ${useByLabelX},${useByStartY},"3",0,1,1,"Best Before:"\n`;
+  const dateX = leftOffset + centerText(effectiveLabelWidth, formattedDate, 3, 1);
   tspl += `TEXT ${dateX},${useByStartY + 20},"3",0,1,1,"${formattedDate}"\n`;
 
   // Print the label

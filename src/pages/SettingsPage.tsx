@@ -29,7 +29,7 @@ import {apiService} from '../services/api';
 import {showToast} from '../utils/toastUtils';
 import LabelSettingsDisplay from '../components/LabelSettingsDisplay';
 import LoadingSpinner from '../components/LoadingSpinner';
-import {FileText, Printer, ShieldAlert} from 'lucide-react-native';
+import {FileText, Printer} from 'lucide-react-native';
 
 // Conditional import for PermissionsAndroid to handle React Native version differences
 let PermissionsAndroid: any;
@@ -292,13 +292,13 @@ const SettingsPage: React.FC = () => {
                 color: '#4CAF50',
                 description: 'PPDS, Logs, Settings, Custom',
               },
-              {
-                mode: 'round' as LabelMode,
-                title: 'Round Labels',
-                icon: ShieldAlert,
-                color: '#FF9800',
-                description: 'Stickers, Logs, Settings, Custom',
-              },
+              // {
+              //   mode: 'round' as LabelMode,
+              //   title: 'Round Labels',
+              //   icon: ShieldAlert,
+              //   color: '#FF9800',
+              //   description: 'Stickers, Logs, Settings, Custom',
+              // },
             ].map(({mode, title, icon: IconComponent, color, description}) => (
               <TouchableOpacity
                 key={mode}

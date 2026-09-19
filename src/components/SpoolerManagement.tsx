@@ -131,7 +131,7 @@ const SpoolerManagement: React.FC = () => {
         },
       };
 
-      const jobId = addToPrintQueue(
+      const jobId = await addToPrintQueue(
         testLabelData,
         1,
         'normal',

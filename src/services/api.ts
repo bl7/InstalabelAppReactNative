@@ -188,6 +188,7 @@ export interface LogsResponse {
 
 // Print label log interface
 export interface PrintLabelLog {
+  platform: 'mobile';
   labelType: string;
   itemId: string;
   itemName: string;
@@ -208,6 +209,15 @@ export interface PrintLabelLog {
 export interface LogRequest {
   action: 'print_label' | 'print_label_batch';
   details: PrintLabelLog | PrintLabelLog[];
+}
+
+export interface AppVersionConfig {
+  minSupportedVersionCode: number;
+  minSupportedVersion?: string;
+  latestVersionCode?: number;
+  latestVersion?: string;
+  updateUrl?: string;
+  message?: string;
 }
 
 // Print session grouping types
@@ -859,6 +869,37 @@ class ApiService {
     return response;
   }
 
+  async sendDeviceHeartbeat(payload: {
+    deviceId: string;
+    platform: 'mobile';
+    deviceModel?: string;
+    appVersion?: string;
+  }): Promise<void> {
+    await this.request<void>(
+      INSTALABEL_API_ENDPOINTS.APP_DEVICES.HEARTBEAT,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      INSTALABEL_ENV.API_BASE_URL,
+    );
+  }
+
+  // Public version check — no auth, must not trigger logout
+  async getAppVersionConfig(): Promise<AppVersionConfig> {
+    const url = `${INSTALABEL_ENV.API_BASE_URL}${INSTALABEL_API_ENDPOINTS.APP_VERSION.GET}?platform=mobile`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {'Content-Type': 'application/json'},
+    });
+
+    if (!response.ok) {
+      throw new Error(`Version check failed: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
   async postActivityLog(
     logRequest: LogRequest,
   ): Promise<{success: boolean; message: string}> {
@@ -902,6 +943,7 @@ class ApiService {
   }): Promise<void> {
     try {
       const logData: PrintLabelLog = {
+        platform: 'mobile',
         labelType: labelData.labelType,
         itemId: labelData.itemId,
         itemName: labelData.itemName,
@@ -942,6 +984,7 @@ class ApiService {
       if (offlineManager.isOnline()) {
         try {
           const logData: PrintLabelLog = {
+            platform: 'mobile',
             labelType: labelData.labelType,
             itemId: labelData.itemId,
             itemName: labelData.itemName,

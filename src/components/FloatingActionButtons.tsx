@@ -48,7 +48,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
   const [useFirstModalVisible, setUseFirstModalVisible] = useState(false);
   const [defrostModalVisible, setDefrostModalVisible] = useState(false);
   const [quantity, setQuantity] = useState('1');
-  const {connectedDevice, printTSPLLabels} = usePrinter();
+  const {connectedDevice, printTSPLLabels, assertCanPrint} = usePrinter();
   const {canPrint, blockedMessage, subscriptionInfo} = useSubscription();
   const {selectedMode} = useMode();
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -244,6 +244,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
     }
 
     try {
+      await assertCanPrint();
       setIsPrintingDefrost(true);
 
       // Generate session ID for this print session
@@ -330,7 +331,12 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
       // Close modal and reset state
       handleDefrostCancel();
     } catch (error) {
-      Alert.alert('Error', 'Failed to print defrost labels. Please try again.');
+      Alert.alert(
+        'Error',
+        error instanceof Error
+          ? error.message
+          : 'Failed to print defrost labels. Please try again.',
+      );
       console.error('Defrost print error:', error);
     } finally {
       setIsPrintingDefrost(false);
@@ -350,6 +356,7 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
     }
 
     try {
+      await assertCanPrint();
       setIsPrintingUseFirst(true);
 
       // Generate session ID for this print session
@@ -385,7 +392,9 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
     } catch (error) {
       Alert.alert(
         'Error',
-        'Failed to print USE FIRST labels. Please try again.',
+        error instanceof Error
+          ? error.message
+          : 'Failed to print USE FIRST labels. Please try again.',
       );
       console.error('Print error:', error);
     } finally {

@@ -24,6 +24,7 @@ import {
 import {generateTSCLabelContent} from './utils/labelManagement';
 import PrintSpooler, {PrintJob} from './services/printSpooler';
 import {apiService} from './services/api';
+import {validateSubscriptionForPrint} from './utils/subscriptionPrintGate';
 
 // Conditional import for NativeModules to handle React Native version differences
 let NativeModules: any;
@@ -98,7 +99,7 @@ interface PrinterContextType {
     priority?: 'high' | 'normal' | 'low',
     userId?: string,
     sessionId?: string,
-  ) => string;
+  ) => Promise<string>;
   removeFromPrintQueue: (jobId: string) => boolean;
   clearPrintQueue: () => void;
   cancelPrintJob: (jobId: string) => boolean;
@@ -139,6 +140,8 @@ interface PrinterContextType {
     printQueue: any[],
     customExpiry: Record<string, string>,
   ) => Promise<void>;
+
+  assertCanPrint: () => Promise<void>;
 }
 
 const PrinterContext = createContext<PrinterContextType | undefined>(undefined);
@@ -189,9 +192,11 @@ export const usePrinter = () => {
       refreshConnectionStatus: async () => {},
       printTSPLLabels: async () => {},
       printSimpleCustomLabel: async () => {},
+      printCircularAllergenSticker: async () => {},
+      assertCanPrint: async () => {},
 
       // Spooler functions
-      addToPrintQueue: () => '',
+      addToPrintQueue: async () => '',
       removeFromPrintQueue: () => false,
       clearPrintQueue: () => {},
       cancelPrintJob: () => false,
@@ -217,7 +222,9 @@ interface PrinterProviderProps {
 }
 
 export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
-  // console.log('🔧 PrinterProvider: Initializing...');
+  const assertCanPrint = useCallback(async () => {
+    await validateSubscriptionForPrint();
+  }, []);
 
   try {
     // Check if PrintBridge is available
@@ -430,6 +437,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     useFullPPDSFormat?: boolean, // If true, use 56mm×80mm PPDS format; if false, use 60mm×40mm PPD format
     ppdsExtras?: PPDSLabelExtras,
   ) => {
+    await assertCanPrint();
+
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
@@ -889,6 +898,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     if (!spoolerRef.current) {
       // Create the actual print function that the spooler will use
       const actualPrintFunction = async (labelData: any) => {
+        await validateSubscriptionForPrint();
+
         if (!connectedDevice) {
           throw new Error('No device connected');
         }
@@ -990,13 +1001,15 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   }, []);
 
   // Spooler functions
-  const addToPrintQueue = (
+  const addToPrintQueue = async (
     labelData: any,
     quantity: number = 1,
     priority: 'high' | 'normal' | 'low' = 'normal',
     userId?: string,
     sessionId?: string,
-  ): string => {
+  ): Promise<string> => {
+    await assertCanPrint();
+
     if (!spoolerRef.current) {
       throw new Error('Print spooler not initialized');
     }
@@ -1106,6 +1119,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     storageInstructions?: string,
     companyName?: string,
   ) => {
+    await assertCanPrint();
+
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
@@ -1185,6 +1200,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     printQueue: any[],
     customExpiry: Record<string, string>,
   ) => {
+    await assertCanPrint();
+
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
@@ -1206,11 +1223,36 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
         console.log(`🖨️ Printing ${quantity} circular stickers for: ${item.name}`);
 
+        // Build ingredients line similar to PPDS labels
+        let ingredientsLine: string | undefined;
+        if (item.ingredients && item.ingredients.length > 0) {
+          if (item.allergens && item.allergens.length > 0) {
+            const ingredientLines = item.ingredients.map((ingredient: string) => {
+              const ingredientAllergens = item.allergens.filter((allergen: string) =>
+                ingredient
+                  .toLowerCase()
+                  .includes(allergen.toLowerCase()),
+              );
+              if (ingredientAllergens.length > 0) {
+                const allergenWarnings = ingredientAllergens
+                  .map((a: string) => a.toUpperCase())
+                  .join(', ');
+                return `${ingredient} (${allergenWarnings})`;
+              }
+              return ingredient;
+            });
+            ingredientsLine = ingredientLines.join(', ');
+          } else {
+            ingredientsLine = item.ingredients.join(', ');
+          }
+        }
+
         // Generate TSPL commands for circular allergen sticker
         const labelData = {
           itemName: item.name,
           allergens: item.allergens || [],
           expiryDate: finalExpiryDate,
+          ingredientsLine,
         };
 
         const tsplCommands = generateCircularAllergenSticker(labelData, {
@@ -1301,6 +1343,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     printTSPLLabels,
     printSimpleCustomLabel,
     printCircularAllergenSticker,
+    assertCanPrint,
 
     // Spooler functions
     addToPrintQueue,

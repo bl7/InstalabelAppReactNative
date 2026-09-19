@@ -79,8 +79,8 @@ android {
         applicationId "com.instalabel.co.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "5.0.0"
+        versionCode 9
+        versionName "6.2.0"
         resConfigs "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh", "ar", "hi"
     }
     signingConfigs {

@@ -52,13 +52,39 @@ const CircularLabelPreview: React.FC<CircularLabelPreviewProps> = ({
     }
   };
 
-  const formattedExpiryDate = formatExpiryDate(customExpiry || item.expiryDate || '');
+  const formattedExpiryDate = formatExpiryDate(
+    customExpiry || item.expiryDate || '',
+  );
   const allergens = item.allergens || [];
+  const itemIngredients = item.ingredients || [];
 
-  // Format allergens list - combine with commas, wrap if needed
-  const allergenText = allergens.length > 0 
-    ? allergens.join(', ').toUpperCase()
-    : 'No allergens';
+  // Build ingredients line similar to PPDS labels
+  let ingredientsText = '';
+  if (itemIngredients.length > 0) {
+    if (allergens.length > 0) {
+      const ingredientLines = itemIngredients.map(ingredient => {
+        const ingredientAllergens = allergens.filter(allergen =>
+          ingredient.toLowerCase().includes(allergen.toLowerCase()),
+        );
+        if (ingredientAllergens.length > 0) {
+          const allergenWarnings = ingredientAllergens
+            .map(a => a.toUpperCase())
+            .join(', ');
+          return `${ingredient} (${allergenWarnings})`;
+        }
+        return ingredient;
+      });
+      ingredientsText = ingredientLines.join(', ');
+    } else {
+      ingredientsText = itemIngredients.join(', ');
+    }
+  } else if (allergens.length > 0) {
+    ingredientsText = `Contains: ${allergens
+      .map(a => a.toUpperCase())
+      .join(', ')}`;
+  } else {
+    ingredientsText = 'Does not contain any allergens';
+  }
 
   return (
     <View style={styles.container}>
@@ -71,23 +97,17 @@ const CircularLabelPreview: React.FC<CircularLabelPreviewProps> = ({
           </Text>
         </View>
 
-        {/* Separator Line */}
-        <View style={styles.separator} />
-
-        {/* Contains Section */}
+        {/* Ingredients Section */}
         <View style={styles.section}>
-          <Text style={styles.containsLabel}>Contains:</Text>
-          <Text style={styles.allergenText} numberOfLines={3}>
-            {allergenText}
+          <Text style={styles.containsLabel}>Ingredients:</Text>
+          <Text style={styles.allergenText} numberOfLines={4}>
+            {ingredientsText}
           </Text>
         </View>
 
-        {/* Separator Line */}
-        <View style={styles.separator} />
-
-        {/* Use By Date */}
+        {/* Best Before Date */}
         <View style={styles.section}>
-          <Text style={styles.useByLabel}>Use By:</Text>
+          <Text style={styles.useByLabel}>Best Before:</Text>
           <Text style={styles.dateText}>{formattedExpiryDate}</Text>
         </View>
       </View>
@@ -134,12 +154,6 @@ const styles = StyleSheet.create({
     color: '#000',
     textAlign: 'center',
     lineHeight: 18,
-  },
-  separator: {
-    width: '80%',
-    height: 1,
-    backgroundColor: '#e0e0e0',
-    marginVertical: 4,
   },
   containsLabel: {
     fontSize: 10,

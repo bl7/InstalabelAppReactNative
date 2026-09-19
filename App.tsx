@@ -7,23 +7,27 @@ import LoginPage from './src/pages/LoginPage';
 import ModeSelectionPage from './src/pages/ModeSelectionPage';
 import CustomTabNavigator from './src/components/CustomTabNavigator';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import VersionGate from './src/components/VersionGate';
 import OfflineNotice from './src/components/OfflineNotice';
 import Toast from 'react-native-toast-message';
 import backgroundSyncService from './src/services/backgroundSync';
 import backgroundCacheService from './src/services/backgroundCacheService';
+import deviceHeartbeatService from './src/services/deviceHeartbeat';
 
 const App: React.FC = () => {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <ModeProvider>
-          <SubscriptionProvider>
-            <PrinterProvider>
-              <AppContent />
-            </PrinterProvider>
-          </SubscriptionProvider>
-        </ModeProvider>
-      </AuthProvider>
+      <VersionGate>
+        <AuthProvider>
+          <ModeProvider>
+            <SubscriptionProvider>
+              <PrinterProvider>
+                <AppContent />
+              </PrinterProvider>
+            </SubscriptionProvider>
+          </ModeProvider>
+        </AuthProvider>
+      </VersionGate>
     </ErrorBoundary>
   );
 };
@@ -43,6 +47,19 @@ const AppContent: React.FC = () => {
       backgroundCacheService.stop();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !accessToken) {
+      deviceHeartbeatService.stop();
+      return;
+    }
+
+    deviceHeartbeatService.start();
+
+    return () => {
+      deviceHeartbeatService.stop();
+    };
+  }, [isAuthenticated, accessToken]);
 
   if (!isAuthenticated) {
     return (

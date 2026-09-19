@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {showToast} from '../utils/toastUtils';
 import {Platform} from 'react-native';
+import {validateSubscriptionForPrint} from '../utils/subscriptionPrintGate';
 
 export interface PrintJob {
   id: string;
@@ -671,6 +672,8 @@ class PrintSpooler {
     this.saveQueueToStorage();
 
     try {
+      await validateSubscriptionForPrint();
+
       // Process each label in the quantity
       for (let i = 0; i < job.quantity; i++) {
         // Check if job should be stopped

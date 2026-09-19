@@ -23,7 +23,8 @@ import {apiService} from '../services/api';
 import {LabelType} from '../utils/labelManagement';
 
 const CustomLabelPage: React.FC = () => {
-  const {connectedDevice, isPrinting, printTSPLLabels} = usePrinter();
+  const {connectedDevice, isPrinting, printTSPLLabels, assertCanPrint} =
+    usePrinter();
   const {selectedMode} = useMode();
 
   // Form state
@@ -105,6 +106,8 @@ const CustomLabelPage: React.FC = () => {
     }
 
     try {
+      await assertCanPrint();
+
       // Create a mock menu item object that matches what generateMenuItemLabel expects
       const customMenuItem = {
         menuItemName: itemName.trim(),
@@ -200,6 +203,8 @@ const CustomLabelPage: React.FC = () => {
     }
 
     try {
+      await assertCanPrint();
+
       // Generate TSPL commands for the simple custom label
       const tsplCommands =
         selectedMode === '80mm'
