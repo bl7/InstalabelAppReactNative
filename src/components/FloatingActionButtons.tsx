@@ -361,20 +361,18 @@ const FloatingActionButtons: React.FC<FloatingActionButtonsProps> = ({
       // Generate session ID for this print session
       const sessionId = apiService.generateSessionId();
 
-      // Generate TSPL commands for USE FIRST labels
+      // One label layout (PRINT 1); quantity handled by send loop / native copies
       const tsplCommands =
         selectedMode === '80mm'
-          ? generateUseFirstLabel80mm(numQuantity)
-          : generateUseFirstLabel(numQuantity);
+          ? generateUseFirstLabel80mm(1)
+          : generateUseFirstLabel(1);
 
-      // Print the labels (Rongta auto-routes via TSPL raster → ZPL bitmap)
       const {sendTsplPrint} = require('../utils/sendTsplPrint');
 
-      // Print the label quantity times
+      // Bitmap/SDK paths ignore TSPL PRINT — loop once per label
       for (let i = 0; i < numQuantity; i++) {
         await sendTsplPrint(tsplCommands, connectedDevice.name);
 
-        // Small delay between prints to prevent buffer overflow
         if (i < numQuantity - 1) {
           await new Promise<void>(resolve => setTimeout(resolve, 500));
         }

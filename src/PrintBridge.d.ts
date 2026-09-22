@@ -15,6 +15,7 @@ declare module 'react-native' {
       disconnect(): Promise<boolean>;
       printTSPL(tsplCommands: string): Promise<boolean>;
       printTSPLBase64(tsplBase64: string): Promise<boolean>;
+      printTsplAsBitmap(tsplCommands: string, copies: number): Promise<boolean>;
       printESC(escCommands: string): Promise<boolean>;
       printZPL(zplCommands: string): Promise<boolean>;
       getConnectionStatus(): Promise<{

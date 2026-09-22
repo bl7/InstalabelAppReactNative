@@ -1,19 +1,35 @@
 import {NativeModules} from 'react-native';
-import {isRongtaPrinterName} from './rongtaPrinter';
 import {getRongtaPrintBridge} from './rongtaPrintBridge';
+import {getXprinterPrintBridge} from './xprinterPrintBridge';
+import {resolvePrintEngine} from './printerRouting';
 
 /**
- * Send TSPL to the active printer.
- * Rongta: rasterize exact TSPL layout → official ZplFactory.getBitmapCmd
- * Others: existing PrintBridge TSPL byte stream
+ * Unified label send path.
+ * - Rongta SDK → rasterize → ZPL getBitmapCmd
+ * - Xprinter/Born4ship SDK → rasterize → TSPLPrinter.bitmap
+ * - Everyone else (Munbyn, etc.) → original PrintBridge raw TSPL (proven alignment)
  */
 export async function sendTsplPrint(
   tsplCommands: string,
   printerName?: string | null,
 ): Promise<boolean> {
-  const RongtaPrintBridge = getRongtaPrintBridge();
-  if (isRongtaPrinterName(printerName) && RongtaPrintBridge) {
+  const engine = resolvePrintEngine(printerName);
+
+  if (engine === 'rongta') {
+    const RongtaPrintBridge = getRongtaPrintBridge();
+    if (!RongtaPrintBridge) {
+      throw new Error('RongtaPrintBridge native module not found');
+    }
     await RongtaPrintBridge.printTsplAsBitmap(tsplCommands, 1);
+    return true;
+  }
+
+  if (engine === 'xprinter') {
+    const XprinterPrintBridge = getXprinterPrintBridge();
+    if (!XprinterPrintBridge) {
+      throw new Error('XprinterPrintBridge native module not found');
+    }
+    await XprinterPrintBridge.printTsplAsBitmap(tsplCommands, 1);
     return true;
   }
 

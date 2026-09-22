@@ -827,12 +827,31 @@ class PrintSpooler {
           await new Promise<void>((resolve, reject) => {
             const {isRongtaPrinterName} = require('../utils/rongtaPrinter');
             const {getRongtaPrintBridge} = require('../utils/rongtaPrintBridge');
+            const {isXprinterPrinterName} = require('../utils/xprinterPrinter');
+            const {
+              getXprinterPrintBridge,
+            } = require('../utils/xprinterPrintBridge');
             const RongtaPrintBridge = getRongtaPrintBridge();
+            const XprinterPrintBridge = getXprinterPrintBridge();
             if (
               isRongtaPrinterName(printer.name) &&
               RongtaPrintBridge
             ) {
               RongtaPrintBridge.printBitmapFile(
+                imagePath,
+                labelData.labelWidth || 60,
+                labelData.labelHeight || 40,
+                1,
+              )
+                .then(() => resolve())
+                .catch(reject);
+              return;
+            }
+            if (
+              isXprinterPrinterName(printer.name) &&
+              XprinterPrintBridge
+            ) {
+              XprinterPrintBridge.printBitmapFile(
                 imagePath,
                 labelData.labelWidth || 60,
                 labelData.labelHeight || 40,

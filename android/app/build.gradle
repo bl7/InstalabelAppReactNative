@@ -79,8 +79,8 @@ android {
         applicationId "com.instalabel.co.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 9
-        versionName "6.2.0"
+        versionCode 10
+        versionName "10.0.0"
         resConfigs "en", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh", "ar", "hi"
     }
     signingConfigs {
@@ -127,6 +127,9 @@ dependencies {
 
     // Official Rongta RTPrinterSDK (Thermal Printer & Label Printer Android SDK)
     implementation files('libs/rongta/printer_library.jar')
+
+    // Official Xprinter POSConnect / TSPLPrinter (Born4ship DB403, XP-* labels)
+    implementation files('libs/xprinter/printer-lib-3.2.0.aar')
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

@@ -25,6 +25,7 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.instalabel.rongta.TsplRasterizer
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -690,6 +691,81 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     fun printTSPL(tsplCommands: String, promise: Promise) {
         // Use the new chunked printing method
         printTSPLChunked(tsplCommands, promise)
+    }
+
+    /**
+     * Rasterize InstaLabel TSPL layouts to a monochrome BITMAP and send raw
+     * bytes — same visual path as Rongta/Xprinter SDK printers for Munbyn/etc.
+     */
+    @ReactMethod
+    fun printTsplAsBitmap(tsplCommands: String, copies: Int, promise: Promise) {
+        Thread {
+            try {
+                if (currentConnectionType == ConnectionType.UNKNOWN) {
+                    promise.reject("PRINT_ERROR", "No active connection")
+                    return@Thread
+                }
+                val result = TsplRasterizer.rasterize(tsplCommands)
+                val mono = convertToMonochrome(result.bitmap)
+                val payload = buildTsplBitmapJob(
+                    mono,
+                    result.widthMm,
+                    result.heightMm,
+                    copies.coerceAtLeast(1),
+                )
+                when (currentConnectionType) {
+                    ConnectionType.CLASSIC -> printClassicBytes(payload, promise)
+                    ConnectionType.BLE -> printBLEChunkedBytes(payload, promise)
+                    ConnectionType.DUAL -> printDualChunkedBytes(payload, promise)
+                    ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "printTsplAsBitmap failed", e)
+                promise.reject("PRINT_ERROR", e.message, e)
+            }
+        }.start()
+    }
+
+    /**
+     * Build SIZE/GAP/CLS + BITMAP (binary) + PRINT for generic TSPL printers.
+     */
+    private fun buildTsplBitmapJob(
+        bitmap: Bitmap,
+        widthMm: Int,
+        heightMm: Int,
+        copies: Int,
+    ): ByteArray {
+        val widthBytes = (bitmap.width + 7) / 8
+        val header = StringBuilder()
+        header.append("SIZE ${widthMm} mm,${heightMm} mm\r\n")
+        header.append("GAP 3 mm,0 mm\r\n")
+        header.append("DIRECTION 0\r\n")
+        header.append("DENSITY 8\r\n")
+        header.append("CLS\r\n")
+        header.append("BITMAP 0,0,$widthBytes,${bitmap.height},0,")
+
+        val out = ByteArrayOutputStream()
+        out.write(header.toString().toByteArray(Charsets.US_ASCII))
+
+        val row = ByteArray(widthBytes)
+        for (y in 0 until bitmap.height) {
+            Arrays.fill(row, 0.toByte())
+            for (x in 0 until bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                val gray = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+                if (gray < 160) {
+                    val byteIndex = x / 8
+                    val bit = 7 - (x % 8)
+                    row[byteIndex] = (row[byteIndex].toInt() or (1 shl bit)).toByte()
+                }
+            }
+            out.write(row)
+        }
+        out.write("\r\nPRINT $copies,1\r\n".toByteArray(Charsets.US_ASCII))
+        return out.toByteArray()
     }
 
     @ReactMethod

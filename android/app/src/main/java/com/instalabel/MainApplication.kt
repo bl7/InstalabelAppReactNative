@@ -22,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
           val packages = PackageList(this).packages.toMutableList()
           packages.add(com.instalabel.bluetooth.PrintBridgePackage())
           packages.add(com.instalabel.rongta.RongtaPrintBridgePackage())
+          packages.add(com.instalabel.xprinter.XprinterPrintBridgePackage())
           return packages
         }
 

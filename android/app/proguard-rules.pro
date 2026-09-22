@@ -17,3 +17,7 @@
 # Official Rongta RTPrinterSDK
 -keep class com.rt.printerlibrary.** { *; }
 -dontwarn com.rt.printerlibrary.**
+
+# Official Xprinter POSConnect SDK
+-keep class net.posprinter.** { *; }
+-dontwarn net.posprinter.**

@@ -27,7 +27,14 @@ import {apiService} from './services/api';
 import {validateSubscriptionForPrint} from './utils/subscriptionPrintGate';
 import {isRongtaPrinterName} from './utils/rongtaPrinter';
 import {getRongtaPrintBridge} from './utils/rongtaPrintBridge';
+import {isXprinterPrinterName} from './utils/xprinterPrinter';
+import {getXprinterPrintBridge} from './utils/xprinterPrintBridge';
 import {sendTsplPrint} from './utils/sendTsplPrint';
+import {
+  clearActivePrinter,
+  setActivePrinter,
+  getActivePrintEngine,
+} from './utils/printerRouting';
 
 // Conditional import for NativeModules to handle React Native version differences
 let NativeModules: any;
@@ -289,14 +296,36 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   // Refresh connection status
   const refreshConnectionStatus = async () => {
     try {
+      // SDK printers are tracked in JS + their own native modules — do not
+      // trust PrintBridge status alone or we falsely drop the connection.
+      const engine = getActivePrintEngine();
+      if (engine === 'rongta') {
+        const bridge = getRongtaPrintBridge();
+        const status = await bridge?.isConnected();
+        if (status && !status.connected) {
+          clearActivePrinter();
+          setConnectedDevice(null);
+        }
+        return;
+      }
+      if (engine === 'xprinter') {
+        const bridge = getXprinterPrintBridge();
+        const status = await bridge?.isConnected();
+        if (status && !status.connected) {
+          clearActivePrinter();
+          setConnectedDevice(null);
+        }
+        return;
+      }
+
       const status = await getConnectionStatus();
       if (status && !status.connected) {
-        // If native module says we're not connected, reset our state
+        clearActivePrinter();
         setConnectedDevice(null);
       }
     } catch (error) {
       console.error('Error refreshing connection status:', error);
-      // On error, assume disconnected
+      clearActivePrinter();
       setConnectedDevice(null);
     }
   };
@@ -361,6 +390,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             console.log(`Rongta connection attempt ${attempt}/3`);
             await RongtaPrintBridge.connect(device.address);
             console.log('Successfully connected via Rongta SDK:', device.address);
+            setActivePrinter(device.name, 'rongta');
             setConnectedDevice(device);
             return;
           } catch (error) {
@@ -377,6 +407,44 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
         throw lastError || new Error('Failed to connect Rongta after 3 attempts');
       }
 
+      const useXprinter = isXprinterPrinterName(device.name);
+      const XprinterPrintBridge = getXprinterPrintBridge();
+
+      if (useXprinter && XprinterPrintBridge) {
+        console.log(
+          '🖨️ Xprinter/Born4ship detected — using official Xprinter SDK',
+        );
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`Xprinter connection attempt ${attempt}/3`);
+            await XprinterPrintBridge.connect(device.address);
+            console.log(
+              'Successfully connected via Xprinter SDK:',
+              device.address,
+            );
+            setActivePrinter(device.name, 'xprinter');
+            setConnectedDevice(device);
+            return;
+          } catch (error) {
+            console.error(
+              `Xprinter connection attempt ${attempt} failed:`,
+              error,
+            );
+            lastError = error;
+            if (attempt < 3) {
+              await new Promise<void>(resolve =>
+                setTimeout(() => resolve(), 1000),
+              );
+            }
+          }
+        }
+        setConnectedDevice(null);
+        throw (
+          lastError || new Error('Failed to connect Xprinter after 3 attempts')
+        );
+      }
+
       const {PrintBridge} = NativeModules;
       if (!PrintBridge) {
         throw new Error('PrintBridge native module not found');
@@ -389,6 +457,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           console.log(`Connection attempt ${attempt}/3`);
           await PrintBridge.connectDual(device.address);
           console.log('Successfully connected to device:', device.address);
+          setActivePrinter(device.name, 'printbridge');
           setConnectedDevice(device);
           return; // Success, exit the function
         } catch (error) {
@@ -422,9 +491,23 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   const disconnectDevice = async () => {
     try {
       console.log('Attempting to disconnect device');
+      const engine = getActivePrintEngine();
       const RongtaPrintBridge = getRongtaPrintBridge();
-      if (isRongtaPrinterName(connectedDevice?.name) && RongtaPrintBridge) {
+      const XprinterPrintBridge = getXprinterPrintBridge();
+      if (engine === 'rongta' && RongtaPrintBridge) {
         await RongtaPrintBridge.disconnect();
+      } else if (engine === 'xprinter' && XprinterPrintBridge) {
+        await XprinterPrintBridge.disconnect();
+      } else if (
+        isRongtaPrinterName(connectedDevice?.name) &&
+        RongtaPrintBridge
+      ) {
+        await RongtaPrintBridge.disconnect();
+      } else if (
+        isXprinterPrinterName(connectedDevice?.name) &&
+        XprinterPrintBridge
+      ) {
+        await XprinterPrintBridge.disconnect();
       } else {
         const {PrintBridge} = NativeModules;
         if (!PrintBridge) {
@@ -433,10 +516,12 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
         await PrintBridge.disconnect();
       }
       console.log('Successfully disconnected device');
+      clearActivePrinter();
       setConnectedDevice(null);
     } catch (error) {
       console.error('Error disconnecting device:', error);
       // Force reset connection state even if disconnect fails
+      clearActivePrinter();
       setConnectedDevice(null);
     }
   };
@@ -444,6 +529,28 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   // Get connection status
   const getConnectionStatus = async () => {
     try {
+      const engine = getActivePrintEngine();
+      if (engine === 'rongta') {
+        const bridge = getRongtaPrintBridge();
+        const status = await bridge?.isConnected();
+        return {
+          type: 'CLASSIC' as const,
+          connected: !!status?.connected,
+          classicConnected: !!status?.connected,
+          bleConnected: false,
+        };
+      }
+      if (engine === 'xprinter') {
+        const bridge = getXprinterPrintBridge();
+        const status = await bridge?.isConnected();
+        return {
+          type: 'CLASSIC' as const,
+          connected: !!status?.connected,
+          classicConnected: !!status?.connected,
+          bleConnected: false,
+        };
+      }
+
       const {PrintBridge} = NativeModules;
       if (!PrintBridge) {
         throw new Error('PrintBridge native module not found');

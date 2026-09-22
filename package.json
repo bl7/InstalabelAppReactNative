@@ -1,6 +1,6 @@
 {
   "name": "InstaLabel",
-  "version": "6.2.0",
+  "version": "10.0.0",
   "private": true,
   "scripts": {
     "android": "react-native run-android",

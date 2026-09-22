@@ -20,13 +20,14 @@ object TsplRasterizer {
     private const val TAG = "TsplRasterizer"
     private const val DPI = 203f
 
-    // TSC built-in bitmap font cell sizes (dots) — used by tsplUtils
+    // Must match tsplUtils centerText / getFontHeight approximations so
+    // rasterized TEXT width equals the layout math (avoids right-edge clip).
     private val FONT_CELLS = mapOf(
-        "1" to Pair(8, 12),
-        "2" to Pair(12, 20),
-        "3" to Pair(16, 24),
-        "4" to Pair(24, 32),
-        "5" to Pair(32, 48),
+        "1" to Pair(6, 8),
+        "2" to Pair(8, 12),
+        "3" to Pair(10, 16),
+        "4" to Pair(12, 20),
+        "5" to Pair(14, 24),
         "6" to Pair(14, 19),
         "7" to Pair(21, 27),
         "8" to Pair(14, 25),
@@ -66,10 +67,12 @@ object TsplRasterizer {
             style = Paint.Style.FILL
             typeface = Typeface.MONOSPACE
             isFakeBoldText = false
+            isAntiAlias = false // crisp thermal-like edges (AA + threshold looks too bold)
         }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val stroke = Paint().apply {
             color = Color.BLACK
             style = Paint.Style.STROKE
+            isAntiAlias = false
         }
 
         for (raw in tspl.lineSequence()) {
@@ -219,9 +222,12 @@ object TsplRasterizer {
         val charH = cell.second * yMul.coerceAtLeast(1)
 
         // Match TSC monospace cell metrics used by tsplUtils centering math
-        paint.textSize = charH * 0.92f
+        paint.textSize = charH * 0.92f + 4f
         paint.typeface = Typeface.MONOSPACE
-        paint.isFakeBoldText = yMul >= 2 || font in listOf("4", "5")
+        paint.isFakeBoldText = true
+        paint.isAntiAlias = false
+        paint.strokeWidth = 0f
+        paint.style = Paint.Style.FILL
 
         val fm = paint.fontMetrics
         // TSPL Y is top of character cell; Android drawText uses baseline
