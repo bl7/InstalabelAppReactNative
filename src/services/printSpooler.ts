@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {showToast} from '../utils/toastUtils';
 import {Platform} from 'react-native';
+import {validateSubscriptionForPrint} from '../utils/subscriptionPrintGate';
 
 export interface PrintJob {
   id: string;
@@ -671,6 +672,8 @@ class PrintSpooler {
     this.saveQueueToStorage();
 
     try {
+      await validateSubscriptionForPrint();
+
       // Process each label in the quantity
       for (let i = 0; i < job.quantity; i++) {
         // Check if job should be stopped
@@ -822,6 +825,43 @@ class PrintSpooler {
 
           // Print using native image processing
           await new Promise<void>((resolve, reject) => {
+            const {isRongtaPrinterName} = require('../utils/rongtaPrinter');
+            const {getRongtaPrintBridge} = require('../utils/rongtaPrintBridge');
+            const {isXprinterPrinterName} = require('../utils/xprinterPrinter');
+            const {
+              getXprinterPrintBridge,
+            } = require('../utils/xprinterPrintBridge');
+            const RongtaPrintBridge = getRongtaPrintBridge();
+            const XprinterPrintBridge = getXprinterPrintBridge();
+            if (
+              isRongtaPrinterName(printer.name) &&
+              RongtaPrintBridge
+            ) {
+              RongtaPrintBridge.printBitmapFile(
+                imagePath,
+                labelData.labelWidth || 60,
+                labelData.labelHeight || 40,
+                1,
+              )
+                .then(() => resolve())
+                .catch(reject);
+              return;
+            }
+            if (
+              isXprinterPrinterName(printer.name) &&
+              XprinterPrintBridge
+            ) {
+              XprinterPrintBridge.printBitmapFile(
+                imagePath,
+                labelData.labelWidth || 60,
+                labelData.labelHeight || 40,
+                1,
+              )
+                .then(() => resolve())
+                .catch(reject);
+              return;
+            }
+
             PrintBridge.printImageFromFile(
               imagePath,
               labelData.labelWidth || 60,
@@ -834,6 +874,27 @@ class PrintSpooler {
           });
 
           console.log(`✅ Native image printing completed on ${printer.name}`);
+
+          // Log the print action if metadata is available
+          if (labelData.metadata) {
+            try {
+              const {apiService} = require('../services/api');
+              await apiService.logPrintAction({
+                labelType: labelData.metadata.labelType,
+                itemId: labelData.metadata.itemId,
+                itemName: labelData.metadata.itemName,
+                quantity: 1, // Log each individual print
+                expiryDate: labelData.metadata.expiryDate,
+                initial: labelData.metadata.initial,
+                labelHeight: labelData.metadata.labelHeight,
+                printerUsed: printer.name,
+                sessionId: labelData.sessionId,
+              });
+            } catch (logError) {
+              console.warn('Failed to log optimized print action:', logError);
+              // Continue printing even if logging fails
+            }
+          }
         } catch (nativeError) {
           console.error(
             `❌ Native image processing failed on ${printer.name}:`,

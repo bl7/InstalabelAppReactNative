@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect, useMemo} from 'react';
 import {
   View,
   Text,
@@ -15,9 +15,11 @@ import {
   Edit3,
   Package,
   AlertTriangle,
+  ShieldAlert,
 } from 'lucide-react-native';
 import FloatingActionButtons from './FloatingActionButtons';
 import {useSubscription} from '../contexts/SubscriptionContext';
+import {useMode} from '../contexts/ModeContext';
 
 // Import pages
 import SettingsPage from '../pages/SettingsPage';
@@ -26,15 +28,56 @@ import LogsPage from '../pages/LogsPage';
 import LabelsPage from '../pages/LabelsPage';
 import CustomLabelPage from '../pages/CustomLabelPage';
 import BulkPage from '../pages/BulkPage';
+import AllergenStickerPage from '../pages/AllergenStickerPage';
 
 import PrintQueueStatus from './PrintQueueStatus';
 
-type TabType = 'Settings' | 'Logs' | 'PPDS' | 'Labels' | 'Bulk' | 'Custom';
+type TabType = 'Settings' | 'Logs' | 'PPDS' | 'Labels' | 'Bulk' | 'Custom' | 'AllergenSticker';
 
 const CustomTabNavigator: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabType>('Labels');
-  const [fabActionsVisible, setFabActionsVisible] = useState(false);
   const {canPrint, subscriptionInfo} = useSubscription();
+  const {selectedMode} = useMode();
+
+  // Define available tabs for each mode
+  const getAvailableTabs = (): TabType[] => {
+    if (!selectedMode) return [];
+    
+    const allTabs: TabType[] = ['Labels', 'PPDS', 'Bulk', 'AllergenSticker', 'Logs', 'Settings'];
+    
+    switch (selectedMode) {
+      case '40mm':
+        // Labels, Bulk, Logs, Settings (no PPDS, no Stickers)
+        return allTabs.filter(tab => tab !== 'PPDS' && tab !== 'AllergenSticker');
+      case '80mm':
+        // Full label workflow on 80mm from Labels/Bulk pages.
+        // PPDS is handled via Labels page label type, so hide dedicated PPDS tab for now.
+        return allTabs.filter(tab => tab !== 'AllergenSticker' && tab !== 'PPDS');
+      case 'round':
+        // Stickers, Logs, Settings (no Labels, no Bulk, no PPDS)
+        return allTabs.filter(tab => tab !== 'Labels' && tab !== 'Bulk' && tab !== 'PPDS');
+      default:
+        return allTabs;
+    }
+  };
+
+  const availableTabs = useMemo(() => getAvailableTabs(), [selectedMode]);
+
+  // Initialize activeTab - will be set properly when mode is selected
+  const [activeTab, setActiveTab] = useState<TabType>('Settings');
+  const [fabActionsVisible, setFabActionsVisible] = useState(false);
+
+  // Reset active tab when mode changes or if current tab is not available
+  useEffect(() => {
+    if (selectedMode && availableTabs.length > 0) {
+      if (!availableTabs.includes(activeTab)) {
+        // Prefer Labels if available, otherwise first available tab
+        const newTab = availableTabs.includes('Labels') 
+          ? 'Labels' 
+          : availableTabs[0] || 'Settings';
+        setActiveTab(newTab);
+      }
+    }
+  }, [selectedMode, availableTabs]);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -51,6 +94,8 @@ const CustomTabNavigator: React.FC = () => {
         return <BulkPage />;
       case 'Custom':
         return <CustomLabelPage />;
+      case 'AllergenSticker':
+        return <AllergenStickerPage />;
       default:
         return <LabelsPage />;
     }
@@ -95,11 +140,12 @@ const CustomTabNavigator: React.FC = () => {
 
       <View style={styles.tabBarContainer}>
         <View style={styles.tabBar}>
-          {renderTab('Labels', FileText, 'Labels')}
-          {renderTab('PPDS', Printer, 'PPDS')}
-          {renderTab('Bulk', Package, 'Bulk')}
-          {renderTab('Logs', History, 'Logs')}
-          {renderTab('Settings', Cog, 'Settings')}
+          {availableTabs.includes('Labels') && renderTab('Labels', FileText, 'Labels')}
+          {availableTabs.includes('PPDS') && renderTab('PPDS', Printer, 'PPDS')}
+          {availableTabs.includes('Bulk') && renderTab('Bulk', Package, 'Bulk')}
+          {availableTabs.includes('AllergenSticker') && renderTab('AllergenSticker', ShieldAlert, 'Stickers')}
+          {availableTabs.includes('Logs') && renderTab('Logs', History, 'Logs')}
+          {availableTabs.includes('Settings') && renderTab('Settings', Cog, 'Settings')}
         </View>
 
         {/* Simple floating FAB */}

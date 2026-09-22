@@ -25,6 +25,7 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.instalabel.rongta.TsplRasterizer
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -268,6 +269,27 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     }
 
     /**
+     * NEW: Print TSPL data provided as Base64-encoded bytes
+     * This is the safest way to handle binary TSPL (commands + bitmap data)
+     */
+    @ReactMethod
+    fun printTSPLBase64(base64Data: String, promise: Promise) {
+        try {
+            val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+
+            when (currentConnectionType) {
+                ConnectionType.CLASSIC -> printClassicBytes(bytes, promise)
+                ConnectionType.BLE -> printBLEChunkedBytes(bytes, promise)
+                ConnectionType.DUAL -> printDualChunkedBytes(bytes, promise)
+                ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in printTSPLBase64", e)
+            promise.reject("PRINT_ERROR", "Failed to print TSPL Base64 data", e)
+        }
+    }
+
+    /**
      * Print image directly from file path with native processing
      * This is the main optimized printing method
      */
@@ -400,7 +422,7 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     }
 
     /**
-     * Print BLE data with automatic chunking
+     * Print BLE data with automatic chunking from String
      */
     private fun printBLEChunked(data: String, promise: Promise) {
         if (bleWriteCharacteristic == null) {
@@ -437,12 +459,59 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     }
 
     /**
+     * Print BLE data with automatic chunking from raw bytes
+     */
+    private fun printBLEChunkedBytes(bytes: ByteArray, promise: Promise) {
+        if (bleWriteCharacteristic == null) {
+            promise.reject("BLE_PRINT_ERROR", "No write characteristic found")
+            return
+        }
+
+        Thread {
+            try {
+                val chunks = bytes.toList().chunked(BLE_CHUNK_SIZE)
+                
+                Log.d(TAG, "Sending ${chunks.size} chunks of ${bytes.size} bytes")
+                
+                for ((index, chunk) in chunks.withIndex()) {
+                    val chunkArray = chunk.toByteArray()
+                    bleWriteCharacteristic?.value = chunkArray
+                    bleGatt?.writeCharacteristic(bleWriteCharacteristic)
+                    
+                    Log.d(TAG, "Sent chunk ${index + 1}/${chunks.size} (${chunkArray.size} bytes)")
+                    
+                    // Add delay between chunks to prevent overflow
+                    if (index < chunks.size - 1) {
+                        Thread.sleep(BLE_CHUNK_DELAY)
+                    }
+                }
+                
+                promise.resolve(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in BLE chunked bytes printing", e)
+                promise.reject("BLE_PRINT_ERROR", "Failed to print via BLE", e)
+            }
+        }.start()
+    }
+
+    /**
      * Print dual mode with chunking
      */
     private fun printDualChunked(data: String, promise: Promise) {
         when (currentConnectionType) {
             ConnectionType.BLE -> printBLEChunked(data, promise)
             ConnectionType.CLASSIC -> printClassic(data, promise)
+            else -> promise.reject("PRINT_ERROR", "Invalid connection type")
+        }
+    }
+
+    /**
+     * Print dual mode with chunking (bytes)
+     */
+    private fun printDualChunkedBytes(bytes: ByteArray, promise: Promise) {
+        when (currentConnectionType) {
+            ConnectionType.BLE -> printBLEChunkedBytes(bytes, promise)
+            ConnectionType.CLASSIC -> printClassicBytes(bytes, promise)
             else -> promise.reject("PRINT_ERROR", "Invalid connection type")
         }
     }
@@ -624,6 +693,81 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
         printTSPLChunked(tsplCommands, promise)
     }
 
+    /**
+     * Rasterize InstaLabel TSPL layouts to a monochrome BITMAP and send raw
+     * bytes — same visual path as Rongta/Xprinter SDK printers for Munbyn/etc.
+     */
+    @ReactMethod
+    fun printTsplAsBitmap(tsplCommands: String, copies: Int, promise: Promise) {
+        Thread {
+            try {
+                if (currentConnectionType == ConnectionType.UNKNOWN) {
+                    promise.reject("PRINT_ERROR", "No active connection")
+                    return@Thread
+                }
+                val result = TsplRasterizer.rasterize(tsplCommands)
+                val mono = convertToMonochrome(result.bitmap)
+                val payload = buildTsplBitmapJob(
+                    mono,
+                    result.widthMm,
+                    result.heightMm,
+                    copies.coerceAtLeast(1),
+                )
+                when (currentConnectionType) {
+                    ConnectionType.CLASSIC -> printClassicBytes(payload, promise)
+                    ConnectionType.BLE -> printBLEChunkedBytes(payload, promise)
+                    ConnectionType.DUAL -> printDualChunkedBytes(payload, promise)
+                    ConnectionType.UNKNOWN -> promise.reject("PRINT_ERROR", "No active connection")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "printTsplAsBitmap failed", e)
+                promise.reject("PRINT_ERROR", e.message, e)
+            }
+        }.start()
+    }
+
+    /**
+     * Build SIZE/GAP/CLS + BITMAP (binary) + PRINT for generic TSPL printers.
+     */
+    private fun buildTsplBitmapJob(
+        bitmap: Bitmap,
+        widthMm: Int,
+        heightMm: Int,
+        copies: Int,
+    ): ByteArray {
+        val widthBytes = (bitmap.width + 7) / 8
+        val header = StringBuilder()
+        header.append("SIZE ${widthMm} mm,${heightMm} mm\r\n")
+        header.append("GAP 3 mm,0 mm\r\n")
+        header.append("DIRECTION 0\r\n")
+        header.append("DENSITY 8\r\n")
+        header.append("CLS\r\n")
+        header.append("BITMAP 0,0,$widthBytes,${bitmap.height},0,")
+
+        val out = ByteArrayOutputStream()
+        out.write(header.toString().toByteArray(Charsets.US_ASCII))
+
+        val row = ByteArray(widthBytes)
+        for (y in 0 until bitmap.height) {
+            Arrays.fill(row, 0.toByte())
+            for (x in 0 until bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                val gray = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+                if (gray < 160) {
+                    val byteIndex = x / 8
+                    val bit = 7 - (x % 8)
+                    row[byteIndex] = (row[byteIndex].toInt() or (1 shl bit)).toByte()
+                }
+            }
+            out.write(row)
+        }
+        out.write("\r\nPRINT $copies,1\r\n".toByteArray(Charsets.US_ASCII))
+        return out.toByteArray()
+    }
+
     @ReactMethod
     fun printESC(escCommands: String, promise: Promise) {
         when (currentConnectionType) {
@@ -674,10 +818,19 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
     }
 
     private fun hasBlePermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ActivityCompat.checkSelfPermission(reactApplicationContext, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                // Android 12+ requires BLUETOOTH_SCAN permission
+                ActivityCompat.checkSelfPermission(reactApplicationContext, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                // Android 10-11 requires ACCESS_FINE_LOCATION for BLE scanning
+                ActivityCompat.checkSelfPermission(reactApplicationContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            }
+            else -> {
+                // Android 9 and below don't need runtime permissions for BLE
+                true
+            }
         }
     }
 
@@ -785,6 +938,18 @@ class PrintBridge(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
         Thread {
             try {
                 classicOutputStream?.write(data.toByteArray())
+                classicOutputStream?.flush()
+                promise.resolve(true)
+            } catch (e: Exception) {
+                promise.reject("CLASSIC_PRINT_ERROR", "Failed to print via classic Bluetooth", e)
+            }
+        }.start()
+    }
+
+    private fun printClassicBytes(bytes: ByteArray, promise: Promise) {
+        Thread {
+            try {
+                classicOutputStream?.write(bytes)
                 classicOutputStream?.flush()
                 promise.resolve(true)
             } catch (e: Exception) {

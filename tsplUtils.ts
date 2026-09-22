@@ -24,6 +24,14 @@ export interface TSPLConfig {
   density: number; // Print density (0-15)
 }
 
+export interface PPDSLabelExtras {
+  storageInstruction?: string;
+  showNetWt?: boolean;
+  showPrice?: boolean;
+  netWt?: string;
+  price?: string;
+}
+
 /**
  * Convert millimeters to dots based on printer DPI
  */
@@ -415,6 +423,7 @@ export const generatePPDSLabel = (
     initialsLine?: string;
     // Add support for full ingredient objects with allergen data
     fullIngredients?: any[];
+    ppdsExtras?: PPDSLabelExtras;
   },
   config: Partial<TSPLConfig> = {},
 ): string => {
@@ -905,15 +914,34 @@ export const generatePPDSLabel = (
     tspl += `TEXT ${leftMargin},${dateY + 35},"3",0,1,1,"${packedText}"\n`;
   }
 
-  // ===== Bottom Section - Storage Instructions and Company Info =====
+  // ===== Bottom Section - Optional Net Wt / Price + Storage / Company =====
+  const extras = labelData.ppdsExtras || {};
+  const showNetWt = !!extras.showNetWt && !!extras.netWt?.trim();
+  const showPrice = !!extras.showPrice && !!extras.price?.trim();
+  const hasFooterExtras = showNetWt || showPrice;
+
   // Position from bottom of label (80mm = 640 dots) to ensure it's always at bottom
   const labelHeight = 640; // 80mm at 203 DPI
-  const bottomMargin = 80; // Increased from 50 to 80 dots from bottom edge to ensure all lines are visible
+  const bottomMargin = 80;
 
   // Calculate bottom section positions from bottom up
   const websiteY = labelHeight - bottomMargin;
   const companyY = websiteY - 25; // 25 dots above website
   const storageY = companyY - 30; // 30 dots above company info
+  const extrasY = storageY - 34; // 34 dots above storage line
+  const extrasSeparatorY = extrasY - 10;
+
+  if (hasFooterExtras) {
+    tspl += `LINE ${leftMargin},${extrasSeparatorY},${448 - rightMargin},${extrasSeparatorY},1\n`;
+    if (showNetWt) {
+      tspl += `TEXT ${leftMargin},${extrasY},"3",0,1,1,"Net Wt: ${extras.netWt?.trim()}"\n`;
+    }
+    if (showPrice) {
+      const priceText = `Price: ${extras.price?.trim()}`;
+      const priceX = 448 - rightMargin - priceText.length * 10;
+      tspl += `TEXT ${Math.max(leftMargin + 150, priceX)},${extrasY},"3",0,1,1,"${priceText}"\n`;
+    }
+  }
 
   // Website (always shown, positioned at bottom)
   tspl += `TEXT ${leftMargin},${websiteY},"2",0,1,1,"www.instalabel.co"\n`;
@@ -1011,6 +1039,43 @@ export const generateUseFirstLabel = (
   // Print "FIRST" on second line
   tspl += `TEXT ${line2X},${line2Y},"${font}",0,${magnification},${magnification},"${line2}"\n`;
 
+  tspl += `PRINT ${quantity},1\n`;
+
+  return tspl;
+};
+
+/**
+ * Generate TSPL commands for 80mm "USE FIRST" labels.
+ * Uses large centered text on 56mm × 80mm media.
+ */
+export const generateUseFirstLabel80mm = (
+  quantity: number = 1,
+  config: Partial<TSPLConfig> = {},
+): string => {
+  const {gap = 3, direction = 1, density = 8} = config;
+
+  let tspl = '';
+  tspl += 'SIZE 56 mm,80 mm\n';
+  tspl += `GAP ${gap} mm,0 mm\n`;
+  tspl += `DIRECTION ${direction}\n`;
+  tspl += `DENSITY ${density}\n`;
+  tspl += 'CLS\n';
+
+  const labelWidth = 448; // 56mm at 203dpi
+  const labelHeight = 640; // 80mm at 203dpi
+  const line1 = 'USE';
+  const line2 = 'FIRST';
+  const font = 4;
+  const mag = 3;
+
+  const line1X = centerText(labelWidth, line1, font, mag);
+  const line2X = centerText(labelWidth, line2, font, mag);
+  const lineHeight = getFontHeight(font) * mag;
+  const totalHeight = lineHeight * 2 + 40;
+  const startY = Math.floor((labelHeight - totalHeight) / 2);
+
+  tspl += `TEXT ${line1X},${startY},"${font}",0,${mag},${mag},"${line1}"\n`;
+  tspl += `TEXT ${line2X},${startY + lineHeight + 40},"${font}",0,${mag},${mag},"${line2}"\n`;
   tspl += `PRINT ${quantity},1\n`;
 
   return tspl;
@@ -1410,6 +1475,51 @@ export const generateDefrostLabel = (
   return tspl;
 };
 
+/**
+ * Generate simple custom label (Notes) in 80mm format.
+ */
+export const generateSimpleCustomLabel80mm = (
+  heading: string,
+  subheading: string,
+  config: Partial<TSPLConfig> = {},
+): string => {
+  return build80mmLabel({
+    title: heading,
+    bodyText: subheading,
+    config,
+  });
+};
+
+/**
+ * Generate TSPL commands for 80mm defrost labels.
+ * Keeps "DEFROSTED" as a strong indicator while fitting all text within bounds.
+ */
+export const generateDefrostLabel80mm = (
+  ingredient: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+  initials?: string,
+): string => {
+  const ingredientName = ingredient?.ingredientName || 'Ingredient';
+  const allergens =
+    ingredient?.allergens && Array.isArray(ingredient.allergens)
+      ? ingredient.allergens
+          .map((a: any) => (typeof a === 'string' ? a : a?.allergenName))
+          .filter(Boolean)
+          .map((a: string) => a.toUpperCase())
+      : [];
+
+  return build80mmLabel({
+    title: ingredientName,
+    expiryDate,
+    bodyText: `Status: DEFROSTED`,
+    allergensText:
+      allergens.length > 0 ? allergens.join(', ') : 'Does not contain allergens',
+    packedSuffix: initials ? `DEFROST | ${initials}` : 'DEFROST',
+    config,
+  });
+};
+
 // Simple word wrap helper
 function wrapText(text: string, maxChars: number): string[] {
   const words = text.split(' ');
@@ -1482,25 +1592,108 @@ function formatDateDayMonth(date: Date): string {
 function calculateOptimalFontSize(
   itemName: string,
   labelWidth: number,
-  maxWidthPercentage: number = 0.65, // Back to 65% of label width max (what was working)
+  maxWidthPercentage: number = 0.75, // Increased from 65% to 75% for better space utilization
 ): {fontSize: number; magnification: number; charWidth: number} {
-  // Available font configurations with their dot dimensions (back to original order)
+  // Enhanced font configurations with more options for better readability
   const fontConfigs = [
-    {font: 2, mag: 2, charWidth: 10, description: 'Font 2 × 2 (24×32 dots)'},
-    {font: 2, mag: 1, charWidth: 5, description: 'Font 2 × 1 (12×16 dots)'},
-    {font: 1, mag: 2, charWidth: 8, description: 'Font 1 × 2 (16×24 dots)'},
-    {font: 1, mag: 1, charWidth: 4, description: 'Font 1 × 1 (8×12 dots)'},
+    {
+      font: 2,
+      mag: 2,
+      charWidth: 10,
+      description: 'Font 2 × 2 (24×32 dots)',
+      priority: 1,
+    },
+    {
+      font: 2,
+      mag: 1,
+      charWidth: 5,
+      description: 'Font 2 × 1 (12×16 dots)',
+      priority: 2,
+    },
+    {
+      font: 1,
+      mag: 2,
+      charWidth: 8,
+      description: 'Font 1 × 2 (16×24 dots)',
+      priority: 3,
+    },
+    {
+      font: 1,
+      mag: 1,
+      charWidth: 4,
+      description: 'Font 1 × 1 (8×12 dots)',
+      priority: 4,
+    },
+    // Additional configurations for better handling of long names
+    {
+      font: 3,
+      mag: 1,
+      charWidth: 6,
+      description: 'Font 3 × 1 (14×20 dots)',
+      priority: 2.5,
+    },
+    {
+      font: 4,
+      mag: 1,
+      charWidth: 7,
+      description: 'Font 4 × 1 (16×24 dots)',
+      priority: 2.2,
+    },
+    {
+      font: 5,
+      mag: 1,
+      charWidth: 8,
+      description: 'Font 5 × 1 (18×28 dots)',
+      priority: 2.1,
+    },
   ];
 
-  // Calculate maximum allowed width (65% of label width by default)
+  // Sort by priority (lower number = higher priority)
+  fontConfigs.sort((a, b) => a.priority - b.priority);
+
+  // Calculate maximum allowed width (75% of label width for better space utilization)
   const maxAllowedWidth = labelWidth * maxWidthPercentage;
 
   console.log(`🔍 Font Size Calculation for: "${itemName}"`);
   console.log(`   Label width: ${labelWidth} dots`);
-  console.log(`   Max allowed width (65%): ${maxAllowedWidth} dots`);
+  console.log(`   Max allowed width (75%): ${maxAllowedWidth} dots`);
   console.log(`   Text length: ${itemName.length} characters`);
 
-  // Find the best font configuration that fits the text
+  // Special handling for very long names - prioritize readability with multi-line support
+  if (itemName.length > 30) {
+    console.log(
+      `   📝 Long name detected (${itemName.length} chars), prioritizing readability`,
+    );
+
+    // For very long names, use a more readable font even if it requires multiple lines
+    const readableConfigs = fontConfigs.filter(config => config.priority <= 3);
+
+    for (const config of readableConfigs) {
+      const textWidth = itemName.length * config.charWidth;
+      console.log(`   Testing ${config.description}: ${textWidth} dots`);
+
+      // For long names, allow up to 90% of label width to maximize readability
+      const longNameMaxWidth = labelWidth * 0.9;
+
+      if (textWidth <= longNameMaxWidth) {
+        console.log(`✅ Font selected for long name: ${config.description}`);
+        console.log(`   Text: "${itemName}" (${itemName.length} chars)`);
+        console.log(
+          `   Width: ${textWidth} dots (${longNameMaxWidth} max for long names)`,
+        );
+        console.log(`   Character width: ${config.charWidth} dots`);
+        console.log(`   Safety margin: ${longNameMaxWidth - textWidth} dots`);
+
+        return {
+          fontSize: config.font,
+          magnification: config.mag,
+          charWidth: config.charWidth,
+        };
+      }
+    }
+  }
+
+  // Standard font selection for normal length names
   for (const config of fontConfigs) {
     const textWidth = itemName.length * config.charWidth;
 
@@ -1580,36 +1773,57 @@ export const generateMenuItemLabel = (
   console.log(`   Total Text Width: ${itemName.length * nameCharWidth} dots`);
   console.log(`   Label Width: ${labelWidth} dots`);
 
-  // Word wrapping logic for long item names with smart line breaking
-  const maxCharsPerLine = Math.floor((labelWidth - 20) / nameCharWidth); // Leave 10 dots margin on each side to prevent cutoff
+  // Enhanced word wrapping logic for long item names with improved space utilization
+  const marginDots = 20; // Total margin (10 dots on each side)
+  const maxCharsPerLine = Math.floor((labelWidth - marginDots) / nameCharWidth);
   let nameLines: string[] = [];
   let totalNameHeight = 0;
+
+  console.log(`🔍 Word Wrapping Analysis:`);
+  console.log(`   Item name: "${itemName}" (${itemName.length} chars)`);
+  console.log(`   Character width: ${nameCharWidth} dots`);
+  console.log(`   Max chars per line: ${maxCharsPerLine}`);
+  console.log(`   Label width: ${labelWidth} dots`);
 
   // Smart line breaking: prefer 2 lines for better font size if possible
   if (itemName.length > maxCharsPerLine || itemName.length > 20) {
     // Split into multiple lines (either forced by length or preferred for readability)
     const words = itemName.split(' ');
 
-    // For 2-line preference, try to create balanced lines
+    // Enhanced line breaking logic for better readability
     if (itemName.length > 20 && words.length >= 2) {
-      // Find the middle point to create balanced lines
-      const midPoint = Math.ceil(itemName.length / 2);
+      // For longer names, try to create balanced lines that work well with the improved font sizes
+      const targetCharsPerLine = Math.max(15, Math.floor(itemName.length / 2)); // Aim for balanced lines
       let firstLine = '';
       let secondLine = '';
+      let bestSplit = false;
 
-      for (const word of words) {
-        if ((firstLine + ' ' + word).trim().length <= midPoint) {
-          firstLine += (firstLine ? ' ' : '') + word;
-        } else {
-          secondLine = words.slice(words.indexOf(word)).join(' ');
-          break;
+      // Try to find a good split point that creates balanced lines
+      for (let i = 1; i < words.length; i++) {
+        const firstPart = words.slice(0, i).join(' ');
+        const secondPart = words.slice(i).join(' ');
+
+        // Check if both parts fit well within reasonable limits
+        if (
+          firstPart.length <= maxCharsPerLine &&
+          secondPart.length <= maxCharsPerLine
+        ) {
+          // Prefer splits that create more balanced lines
+          const balance = Math.abs(firstPart.length - secondPart.length);
+          if (balance <= 8 || !bestSplit) {
+            // Allow up to 8 character difference for balance
+            firstLine = firstPart;
+            secondLine = secondPart;
+            bestSplit = true;
+          }
         }
       }
 
       if (firstLine && secondLine) {
         nameLines = [firstLine.trim(), secondLine.trim()];
+        console.log(`   📝 Balanced split: "${firstLine}" | "${secondLine}"`);
       } else {
-        // Fallback to original logic if balanced split fails
+        // Fallback to word-based wrapping if balanced split fails
         let currentLine = '';
         for (const word of words) {
           if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
@@ -1620,9 +1834,10 @@ export const generateMenuItemLabel = (
           }
         }
         if (currentLine) nameLines.push(currentLine.trim());
+        console.log(`   📝 Word-based wrapping: ${nameLines.length} lines`);
       }
     } else {
-      // Original logic for other cases
+      // Standard word-based wrapping for shorter names
       let currentLine = '';
       for (const word of words) {
         if ((currentLine + ' ' + word).trim().length <= maxCharsPerLine) {
@@ -1633,6 +1848,7 @@ export const generateMenuItemLabel = (
         }
       }
       if (currentLine) nameLines.push(currentLine.trim());
+      console.log(`   📝 Standard wrapping: ${nameLines.length} lines`);
     }
 
     totalNameHeight = nameLines.length * 33; // 33 dots per line (20 for text + 13 for spacing) for better readability
@@ -1835,6 +2051,7 @@ export const generatePPDLabel = (
   menuItem: any,
   expiryDate?: string,
   config: Partial<TSPLConfig> = {},
+  ppdsExtras?: PPDSLabelExtras,
 ): string => {
   const {dpi = 203, gap = 3, direction = 0, density = 8} = config;
 
@@ -2038,6 +2255,12 @@ export const generatePPDLabel = (
   tspl += `TEXT ${dateX},${dateY},"3",0,1,1,"Best Before: ${formattedDate}"\n`;
 
   // Ingredients with allergens
+  const hasStorageInstruction = !!ppdsExtras?.storageInstruction?.trim();
+  const showNetWt = !!ppdsExtras?.showNetWt && !!ppdsExtras?.netWt?.trim();
+  const showPrice = !!ppdsExtras?.showPrice && !!ppdsExtras?.price?.trim();
+  const hasFooterExtras = hasStorageInstruction || showNetWt || showPrice;
+  const reservedFooterHeight = hasFooterExtras ? 70 : 0; // line + storage + netwt/price
+
   if (menuItem.ingredients && menuItem.ingredients.length > 0) {
     let ingredientsText = 'Ingredients: ';
 
@@ -2103,10 +2326,53 @@ export const generatePPDLabel = (
     }
 
     // Print ingredients lines
-    lines.forEach((line, index) => {
-      const lineY = dateY + 20 + index * 20; // Position below date with 20 dots spacing
+    const ingredientsStartY = dateY + 20;
+    const maxIngredientY = 320 - reservedFooterHeight - 5;
+    const maxIngredientLines = Math.max(
+      1,
+      Math.floor((maxIngredientY - ingredientsStartY) / 20),
+    );
+    const visibleLines =
+      lines.length > maxIngredientLines
+        ? [
+            ...lines.slice(0, maxIngredientLines - 1),
+            `${lines[maxIngredientLines - 1].slice(0, 34)}...`,
+          ]
+        : lines;
+
+    visibleLines.forEach((line, index) => {
+      const lineY = ingredientsStartY + index * 20;
       tspl += `TEXT 10,${lineY},"3",0,1,1,"${line}"\n`;
     });
+  }
+
+  if (hasFooterExtras) {
+    const separatorY = 285;
+    const storageY = 258;
+    const extrasY = 292;
+
+    tspl += `LINE 8,${separatorY},472,${separatorY},1\n`;
+
+    if (hasStorageInstruction) {
+      const storageLine = sanitizeTSPLText(
+        (ppdsExtras?.storageInstruction || '').replace(/\n/g, ' ').trim(),
+      );
+      const wrappedStorage = wrapText(`Storage: ${storageLine}`, 46);
+      tspl += `TEXT 10,${storageY},"2",0,1,1,"${
+        sanitizeTSPLText(wrappedStorage[0] || 'Storage: Keep refrigerated below 5C')
+      }"\n`;
+    }
+
+    if (showNetWt) {
+      tspl += `TEXT 10,${extrasY},"3",0,1,1,"Net Wt: ${sanitizeTSPLText(
+        ppdsExtras?.netWt?.trim() || '',
+      )}"\n`;
+    }
+    if (showPrice) {
+      const priceText = `Price: ${sanitizeTSPLText(ppdsExtras?.price?.trim() || '')}`;
+      const priceX = Math.max(290, 470 - priceText.length * 10);
+      tspl += `TEXT ${priceX},${extrasY},"3",0,1,1,"${priceText}"\n`;
+    }
   }
 
   // Print the label
@@ -2329,6 +2595,295 @@ export const generateETCLabel = (
   tspl += 'PRINT 1,1\n';
 
   return tspl;
+};
+
+const sanitizeTSPLText = (value: string): string => value.replace(/"/g, "'");
+
+const parseExpiryDateSafe = (expiryDate?: string): Date => {
+  if (!expiryDate) {
+    const fallback = new Date();
+    fallback.setDate(fallback.getDate() + 7);
+    return fallback;
+  }
+
+  const parsed = parseDate(expiryDate);
+  if (parsed && !isNaN(parsed.getTime())) {
+    return parsed;
+  }
+
+  const colonSplit = expiryDate.includes(':')
+    ? expiryDate.split(':')[1]?.trim()
+    : expiryDate;
+  const nativeDate = new Date(colonSplit || expiryDate);
+  if (!isNaN(nativeDate.getTime())) {
+    return nativeDate;
+  }
+
+  const fallback = new Date();
+  fallback.setDate(fallback.getDate() + 7);
+  return fallback;
+};
+
+const formatDateDDMMYYYY = (date: Date): string => {
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
+const getIngredientNames = (menuItem: any): string[] => {
+  if (!menuItem?.ingredients || !Array.isArray(menuItem.ingredients)) {
+    return [];
+  }
+  return menuItem.ingredients
+    .map((ingredient: any) =>
+      typeof ingredient === 'string'
+        ? ingredient
+        : ingredient?.ingredientName || ingredient?.name,
+    )
+    .filter(Boolean);
+};
+
+const getAllergenNames = (source: any): string[] => {
+  const allergenSet = new Set<string>();
+
+  const ingredientsForLookup =
+    source?.fullIngredients && Array.isArray(source.fullIngredients)
+      ? source.fullIngredients
+      : source?.ingredients && Array.isArray(source.ingredients)
+      ? source.ingredients
+      : [];
+
+  ingredientsForLookup.forEach((ingredient: any) => {
+    if (!ingredient?.allergens || !Array.isArray(ingredient.allergens)) {
+      return;
+    }
+    ingredient.allergens.forEach((allergen: any) => {
+      const name =
+        typeof allergen === 'string' ? allergen : allergen?.allergenName;
+      if (name) {
+        allergenSet.add(name.toUpperCase());
+      }
+    });
+  });
+
+  if (allergenSet.size === 0 && source?.allergens && Array.isArray(source.allergens)) {
+    source.allergens.forEach((allergen: any) => {
+      const name =
+        typeof allergen === 'string' ? allergen : allergen?.allergenName;
+      if (name) {
+        allergenSet.add(name.toUpperCase());
+      }
+    });
+  }
+
+  return Array.from(allergenSet);
+};
+
+const build80mmLabel = ({
+  title,
+  expiryDate,
+  bodyText,
+  allergensText,
+  packedSuffix,
+  config,
+}: {
+  title: string;
+  expiryDate?: string;
+  bodyText: string;
+  allergensText?: string;
+  packedSuffix?: string;
+  config?: Partial<TSPLConfig>;
+}): string => {
+  const {gap = 3, direction = 1, density = 8} = config || {};
+  const labelWidth = 448; // 56mm @ 203dpi
+  const labelHeight = 640; // 80mm @ 203dpi
+  const left = 24;
+  const right = 24;
+  const usableWidth = labelWidth - left - right;
+  const maxBodyLines = 8;
+
+  let tspl = '';
+  tspl += 'SIZE 56 mm,80 mm\n';
+  tspl += `GAP ${gap} mm,0 mm\n`;
+  tspl += `DIRECTION ${direction}\n`;
+  tspl += `DENSITY ${density}\n`;
+  tspl += 'CLS\n';
+
+  const safeTitle = sanitizeTSPLText(title || 'LABEL');
+  const font = calculateOptimalFontSize(safeTitle, usableWidth, 0.9);
+  const maxHeaderChars = Math.max(
+    12,
+    Math.floor((usableWidth - 16) / Math.max(font.charWidth, 6)),
+  );
+  let headerLines = wrapText(safeTitle, maxHeaderChars).slice(0, 3);
+  if (headerLines.length === 0) {
+    headerLines = ['LABEL'];
+  }
+  if (wrapText(safeTitle, maxHeaderChars).length > 3) {
+    const last = headerLines[2];
+    headerLines[2] = `${last.substring(0, Math.max(0, last.length - 3))}...`;
+  }
+
+  const headerStartY = 20;
+  const headerLineHeight = 30;
+  const headerBoxTop = headerStartY - 10;
+  const headerBoxBottom =
+    headerStartY + headerLines.length * headerLineHeight + 6;
+  tspl += `BOX ${left},${headerBoxTop},${labelWidth - right},${headerBoxBottom},2\n`;
+
+  headerLines.forEach((line, index) => {
+    const x = left + centerText(usableWidth, line, font.fontSize, font.magnification);
+    const y = headerStartY + index * headerLineHeight;
+    tspl += `TEXT ${x},${y},"${font.fontSize}",0,${font.magnification},${font.magnification},"${sanitizeTSPLText(
+      line,
+    )}"\n`;
+  });
+
+  const parsedExpiry = parseExpiryDateSafe(expiryDate);
+  const today = new Date();
+  const useBy = `Use by: ${formatDateDDMMYYYY(parsedExpiry)}`;
+  const packed = `Packed: ${formatDateDDMMYYYY(today)}`;
+
+  let cursorY = headerBoxBottom + 18;
+  tspl += `TEXT ${left},${cursorY},"3",0,1,1,"${useBy}"\n`;
+  cursorY += 28;
+  tspl += `TEXT ${left},${cursorY},"3",0,1,1,"${packed}"\n`;
+  cursorY += 28;
+
+  if (packedSuffix) {
+    tspl += `TEXT ${left},${cursorY},"3",0,1,1,"${sanitizeTSPLText(packedSuffix)}"\n`;
+    cursorY += 30;
+  }
+
+  const safeBody = sanitizeTSPLText(bodyText || '');
+  const maxBodyChars = 42;
+  let bodyLines = wrapText(safeBody, maxBodyChars);
+  if (bodyLines.length > maxBodyLines) {
+    bodyLines = bodyLines.slice(0, maxBodyLines);
+    const last = bodyLines[bodyLines.length - 1];
+    bodyLines[bodyLines.length - 1] = `${last.substring(
+      0,
+      Math.max(0, last.length - 3),
+    )}...`;
+  }
+
+  bodyLines.forEach(line => {
+    tspl += `TEXT ${left},${cursorY},"2",0,1,1,"${line}"\n`;
+    cursorY += 24;
+  });
+
+  if (allergensText) {
+    const safeAllergens = sanitizeTSPLText(allergensText);
+    const warningLines = wrapText(`Contains: ${safeAllergens}`, 34).slice(0, 3);
+    const warningHeight = warningLines.length * 24 + 12;
+    const warningTop = Math.min(cursorY + 8, labelHeight - 180);
+    const warningBottom = Math.min(warningTop + warningHeight, labelHeight - 100);
+    tspl += `BOX ${left},${warningTop},${labelWidth - right},${warningBottom},2\n`;
+
+    warningLines.forEach((line, index) => {
+      const y = warningTop + 8 + index * 24;
+      tspl += `TEXT ${left + 8},${y},"2",0,1,1,"${line}"\n`;
+    });
+  }
+
+  tspl += 'PRINT 1,1\n';
+  return tspl;
+};
+
+/**
+ * 80mm formatter variants for non-PPDS label types.
+ */
+export const generateIngredientLabel80mm = (
+  ingredient: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+  initials?: string,
+): string => {
+  const ingredientName = ingredient?.ingredientName || 'Ingredient';
+  const allergens = getAllergenNames(ingredient);
+  return build80mmLabel({
+    title: ingredientName,
+    expiryDate,
+    bodyText: `Ingredient: ${ingredientName}`,
+    allergensText:
+      allergens.length > 0 ? allergens.join(', ') : 'Does not contain allergens',
+    packedSuffix: initials ? `PREP | ${initials}` : 'PREP',
+    config,
+  });
+};
+
+export const generateMenuItemLabel80mm = (
+  menuItem: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+  initials?: string,
+): string => {
+  const itemName = menuItem?.menuItemName || menuItem?.name || 'Menu Item';
+  const ingredientNames = getIngredientNames(menuItem);
+  const allergens = getAllergenNames(menuItem);
+  const labelType =
+    menuItem?.labelType && menuItem.labelType !== 'default'
+      ? String(menuItem.labelType).toUpperCase()
+      : '';
+  const suffixParts = [labelType, initials].filter(Boolean);
+
+  return build80mmLabel({
+    title: itemName,
+    expiryDate,
+    bodyText: `Ingredients: ${
+      ingredientNames.length > 0 ? ingredientNames.join(', ') : 'None'
+    }`,
+    allergensText:
+      allergens.length > 0 ? allergens.join(', ') : 'Does not contain allergens',
+    packedSuffix: suffixParts.join(' | '),
+    config,
+  });
+};
+
+export const generatePPDLabel80mm = (
+  menuItem: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+): string => {
+  const itemName = menuItem?.menuItemName || menuItem?.name || 'PPD Label';
+  const ingredientNames = getIngredientNames(menuItem);
+  const allergens = getAllergenNames(menuItem);
+
+  return build80mmLabel({
+    title: itemName,
+    expiryDate,
+    bodyText: `Ingredients: ${
+      ingredientNames.length > 0 ? ingredientNames.join(', ') : 'None'
+    }`,
+    allergensText:
+      allergens.length > 0 ? allergens.join(', ') : 'Does not contain allergens',
+    packedSuffix: 'PPD',
+    config,
+  });
+};
+
+export const generateETCLabel80mm = (
+  menuItem: any,
+  expiryDate?: string,
+  config: Partial<TSPLConfig> = {},
+  initials?: string,
+  customContains?: string,
+): string => {
+  const itemName = menuItem?.menuItemName || menuItem?.name || 'ETC Label';
+  const ingredientNames = getIngredientNames(menuItem);
+  const containsText =
+    customContains && customContains.trim()
+      ? customContains.trim()
+      : ingredientNames.join(', ');
+
+  return build80mmLabel({
+    title: itemName,
+    expiryDate,
+    bodyText: `Contains: ${containsText || 'None'}`,
+    packedSuffix: initials ? `ETC | ${initials}` : 'ETC',
+    config,
+  });
 };
 
 /**
@@ -2603,6 +3158,191 @@ export const generateSimpleCustomLabel = (
   return tspl;
 };
 
+/**
+ * Generate TSPL commands for circular allergen sticker (50mm diameter)
+ * Format: Item name, Contains allergens, Use By date
+ * Layout matches the circular label design with horizontal separators
+ */
+export const generateCircularAllergenSticker = (
+  labelData: {
+    itemName: string;
+    allergens: string[];
+    expiryDate: string;
+    ingredientsLine?: string;
+  },
+  config: Partial<TSPLConfig> = {},
+): string => {
+  const {dpi = 203, gap = 3, direction = 1, density = 8} = config;
+
+  let tspl = '';
+
+  // Initialize label with 50mm × 50mm dimensions (square, die-cut to circle)
+  tspl += `SIZE 50mm,50mm\n`;
+  tspl += `GAP ${gap}mm,0mm\n`;
+  tspl += `DIRECTION ${direction}\n`;
+  tspl += 'CLS\n';
+
+  // Using 203 DPI: 50mm = ~400 dots. Use narrower effective width to shift content further left (fix right cutoff).
+  const labelWidth = 400;
+  const effectiveLabelWidth = 320;
+  const labelHeight = 400;
+  const centerX = labelWidth / 2;
+  const leftOffset = Math.floor((labelWidth - effectiveLabelWidth) / 2) - 5; // shift all text left (+ half char)
+
+  // Format expiry date to DD/MM/YYYY
+  let formattedDate = labelData.expiryDate || '';
+  try {
+    // Try to parse and format the date
+    let date: Date | null = null;
+    
+    // Try DD.MM.YYYY format
+    const parts = formattedDate.split('.');
+    if (parts.length === 3) {
+      const day = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const year = parseInt(parts[2], 10);
+      date = new Date(year, month, day);
+    } else if (formattedDate.includes('-')) {
+      // Try YYYY-MM-DD format
+      date = new Date(formattedDate);
+    } else {
+      date = new Date(formattedDate);
+    }
+
+    if (date && !isNaN(date.getTime())) {
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const year = date.getFullYear();
+      formattedDate = `${day}/${month}/${year}`;
+    }
+  } catch (error) {
+    console.error('Error formatting date:', error);
+    // Keep original date string if parsing fails
+  }
+
+  // ===== Item Name Section (Top) =====
+  // Big font (3×2): only ~10 chars fit per line. If >20 chars, use small font and fit in 2 lines.
+  const itemName = labelData.itemName.toUpperCase();
+  const BIG_FONT_MAX_CHARS = 10;
+  const SMALL_FONT_MAX_CHARS = 18;
+
+  let itemNameLines: string[] = [];
+  let useSmallItemFont: boolean;
+
+  if (itemName.length <= BIG_FONT_MAX_CHARS) {
+    itemNameLines = [itemName];
+    useSmallItemFont = false;
+  } else if (itemName.length <= 20) {
+    // 2 lines, max 10 chars per line (word wrap then hard break)
+    const words = itemName.split(' ');
+    let line1 = '';
+    let line2 = '';
+    for (const word of words) {
+      const candidate = (line1 + (line1 ? ' ' : '') + word).trim();
+      if (candidate.length <= BIG_FONT_MAX_CHARS) {
+        line1 = candidate;
+      } else {
+        line2 = words.slice(words.indexOf(word)).join(' ').trim();
+        break;
+      }
+    }
+    if (!line2 && line1) {
+      line1 = itemName.substring(0, BIG_FONT_MAX_CHARS).trim();
+      line2 = itemName.substring(BIG_FONT_MAX_CHARS).trim();
+    }
+    if (line1.length > BIG_FONT_MAX_CHARS) {
+      line1 = line1.substring(0, BIG_FONT_MAX_CHARS);
+      line2 = (line1.length ? itemName.substring(line1.length) : itemName).trim();
+    }
+    itemNameLines = [line1, line2].filter(Boolean);
+    useSmallItemFont = false;
+  } else {
+    // >20 chars: small font, 2 lines
+    useSmallItemFont = true;
+    const words = itemName.split(' ');
+    let line1 = '';
+    let line2 = '';
+    for (const word of words) {
+      const candidate = (line1 + (line1 ? ' ' : '') + word).trim();
+      if (candidate.length <= SMALL_FONT_MAX_CHARS) {
+        line1 = candidate;
+      } else {
+        line2 = words.slice(words.indexOf(word)).join(' ').trim();
+        break;
+      }
+    }
+    if (!line2 && line1) {
+      const mid = Math.ceil(itemName.length / 2);
+      line1 = itemName.substring(0, mid).trim();
+      line2 = itemName.substring(mid).trim();
+    }
+    if (line1.length > SMALL_FONT_MAX_CHARS) {
+      line1 = line1.substring(0, SMALL_FONT_MAX_CHARS);
+      line2 = itemName.substring(line1.length).trim();
+    }
+    if (line2.length > SMALL_FONT_MAX_CHARS) {
+      line2 = line2.substring(0, SMALL_FONT_MAX_CHARS);
+    }
+    itemNameLines = [line1, line2].filter(Boolean).slice(0, 2);
+  }
+
+  const itemFontScale = useSmallItemFont ? 1 : 2;
+  const itemLineSpacing = useSmallItemFont ? 28 : 40;
+  const itemNameStartY = 60;
+  itemNameLines.forEach((line, index) => {
+    const lineX = leftOffset + centerText(effectiveLabelWidth, line, 3, itemFontScale);
+    const lineY = itemNameStartY + index * itemLineSpacing;
+    tspl += `TEXT ${lineX},${lineY},"3",0,${itemFontScale},${itemFontScale},"${line}"\n`;
+  });
+
+  const itemNameEndY = itemNameStartY + itemNameLines.length * itemLineSpacing;
+
+  // ===== Ingredients Section =====
+  let ingredientsText = '';
+  if (labelData.ingredientsLine && labelData.ingredientsLine.trim().length > 0) {
+    ingredientsText = `Ingredients: ${labelData.ingredientsLine}`;
+  }
+
+  const maxIngredientsChars = 22;
+  const words = ingredientsText.split(' ');
+  const ingredientLines: string[] = [];
+  let currentLine = '';
+
+  words.forEach(word => {
+    const testLine = currentLine + (currentLine ? ' ' : '') + word;
+    if (testLine.length <= maxIngredientsChars) {
+      currentLine = testLine;
+    } else {
+      if (currentLine) {
+        ingredientLines.push(currentLine.trim());
+      }
+      currentLine = word;
+    }
+  });
+  if (currentLine) {
+    ingredientLines.push(currentLine.trim());
+  }
+
+  const ingredientsStartY = itemNameEndY + 25;
+  ingredientLines.forEach((line, index) => {
+    const lineX = leftOffset + centerText(effectiveLabelWidth, line, 3, 1);
+    const lineY = ingredientsStartY + index * 22;
+    tspl += `TEXT ${lineX},${lineY},"3",0,1,1,"${line}"\n`;
+  });
+
+  // ===== Best Before Date Section (Bottom) =====
+  const useByStartY = ingredientsStartY + ingredientLines.length * 22 + 35;
+  const useByLabelX = leftOffset + centerText(effectiveLabelWidth, 'Best Before:', 3, 1);
+  tspl += `TEXT ${useByLabelX},${useByStartY},"3",0,1,1,"Best Before:"\n`;
+  const dateX = leftOffset + centerText(effectiveLabelWidth, formattedDate, 3, 1);
+  tspl += `TEXT ${dateX},${useByStartY + 20},"3",0,1,1,"${formattedDate}"\n`;
+
+  // Print the label
+  tspl += 'PRINT 1,1\n';
+
+  return tspl;
+};
+
 export default {
   mmToDots,
   generateLabelSetup,
@@ -2613,9 +3353,19 @@ export default {
   generateDirectTSPLLabel,
   generatePPDSLabel,
   generateUseFirstLabel,
+  generateUseFirstLabel80mm,
   generateIngredientLabel,
+  generateIngredientLabel80mm,
   generateMenuItemLabel,
+  generateMenuItemLabel80mm,
+  generatePPDLabel,
+  generatePPDLabel80mm,
+  generateETCLabel,
+  generateETCLabel80mm,
   generateDefrostLabel,
+  generateDefrostLabel80mm,
   generateDebugTSPLLabel,
   generateSimpleCustomLabel,
+  generateSimpleCustomLabel80mm,
+  generateCircularAllergenSticker,
 };

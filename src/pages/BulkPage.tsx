@@ -16,6 +16,7 @@ import {Package, Printer} from 'lucide-react-native';
 
 import PrintQueueStatus from '../components/PrintQueueStatus';
 import {useAuth} from '../contexts/AuthContext';
+import {useMode} from '../contexts/ModeContext';
 import {usePrinter} from '../PrinterContext';
 import {
   apiService,
@@ -31,6 +32,7 @@ import offlineManager from '../utils/offlineManager';
 
 const BulkPage: React.FC = () => {
   const {isAuthenticated, user} = useAuth();
+  const {selectedMode} = useMode();
   const {connectedDevice, printTSPLLabels} = usePrinter();
 
   // State management
@@ -181,7 +183,7 @@ const BulkPage: React.FC = () => {
           expiryDate,
           allergens,
           ingredients: ingredientNames,
-          labelHeight: '31mm',
+          labelHeight: selectedMode === '80mm' ? '80mm' : '40mm',
         };
       });
 
@@ -198,7 +200,7 @@ const BulkPage: React.FC = () => {
         undefined, // storageInstructions
         user?.company_name || 'InstaLabel Ltd', // companyName
         sessionId, // Pass session ID for logging
-        false, // Use standard format (60mm × 40mm) for bulk printing
+        selectedMode === '80mm', // Use 80mm formatters when in 80mm mode
       );
 
       showToast.success(

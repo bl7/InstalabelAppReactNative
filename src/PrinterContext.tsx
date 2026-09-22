@@ -11,13 +11,30 @@ import {
   generateDirectTSPLLabel,
   generatePPDSLabel,
   generateIngredientLabel,
+  generateIngredientLabel80mm,
   generateMenuItemLabel,
+  generateMenuItemLabel80mm,
   generatePPDLabel,
+  generatePPDLabel80mm,
   generateETCLabel,
+  generateETCLabel80mm,
+  generateCircularAllergenSticker,
+  PPDSLabelExtras,
 } from '../tsplUtils';
 import {generateTSCLabelContent} from './utils/labelManagement';
 import PrintSpooler, {PrintJob} from './services/printSpooler';
 import {apiService} from './services/api';
+import {validateSubscriptionForPrint} from './utils/subscriptionPrintGate';
+import {isRongtaPrinterName} from './utils/rongtaPrinter';
+import {getRongtaPrintBridge} from './utils/rongtaPrintBridge';
+import {isXprinterPrinterName} from './utils/xprinterPrinter';
+import {getXprinterPrintBridge} from './utils/xprinterPrintBridge';
+import {sendTsplPrint} from './utils/sendTsplPrint';
+import {
+  clearActivePrinter,
+  setActivePrinter,
+  getActivePrintEngine,
+} from './utils/printerRouting';
 
 // Conditional import for NativeModules to handle React Native version differences
 let NativeModules: any;
@@ -82,6 +99,7 @@ interface PrinterContextType {
     companyName?: string,
     sessionId?: string,
     useFullPPDSFormat?: boolean,
+    ppdsExtras?: PPDSLabelExtras,
   ) => Promise<void>;
 
   // Spooler functions
@@ -91,7 +109,7 @@ interface PrinterContextType {
     priority?: 'high' | 'normal' | 'low',
     userId?: string,
     sessionId?: string,
-  ) => string;
+  ) => Promise<string>;
   removeFromPrintQueue: (jobId: string) => boolean;
   clearPrintQueue: () => void;
   cancelPrintJob: (jobId: string) => boolean;
@@ -126,6 +144,14 @@ interface PrinterContextType {
     storageInstructions?: string,
     companyName?: string,
   ) => Promise<void>;
+
+  // Circular allergen sticker printing function
+  printCircularAllergenSticker: (
+    printQueue: any[],
+    customExpiry: Record<string, string>,
+  ) => Promise<void>;
+
+  assertCanPrint: () => Promise<void>;
 }
 
 const PrinterContext = createContext<PrinterContextType | undefined>(undefined);
@@ -176,9 +202,11 @@ export const usePrinter = () => {
       refreshConnectionStatus: async () => {},
       printTSPLLabels: async () => {},
       printSimpleCustomLabel: async () => {},
+      printCircularAllergenSticker: async () => {},
+      assertCanPrint: async () => {},
 
       // Spooler functions
-      addToPrintQueue: () => '',
+      addToPrintQueue: async () => '',
       removeFromPrintQueue: () => false,
       clearPrintQueue: () => {},
       cancelPrintJob: () => false,
@@ -204,7 +232,9 @@ interface PrinterProviderProps {
 }
 
 export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
-  // console.log('🔧 PrinterProvider: Initializing...');
+  const assertCanPrint = useCallback(async () => {
+    await validateSubscriptionForPrint();
+  }, []);
 
   try {
     // Check if PrintBridge is available
@@ -266,14 +296,36 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   // Refresh connection status
   const refreshConnectionStatus = async () => {
     try {
+      // SDK printers are tracked in JS + their own native modules — do not
+      // trust PrintBridge status alone or we falsely drop the connection.
+      const engine = getActivePrintEngine();
+      if (engine === 'rongta') {
+        const bridge = getRongtaPrintBridge();
+        const status = await bridge?.isConnected();
+        if (status && !status.connected) {
+          clearActivePrinter();
+          setConnectedDevice(null);
+        }
+        return;
+      }
+      if (engine === 'xprinter') {
+        const bridge = getXprinterPrintBridge();
+        const status = await bridge?.isConnected();
+        if (status && !status.connected) {
+          clearActivePrinter();
+          setConnectedDevice(null);
+        }
+        return;
+      }
+
       const status = await getConnectionStatus();
       if (status && !status.connected) {
-        // If native module says we're not connected, reset our state
+        clearActivePrinter();
         setConnectedDevice(null);
       }
     } catch (error) {
       console.error('Error refreshing connection status:', error);
-      // On error, assume disconnected
+      clearActivePrinter();
       setConnectedDevice(null);
     }
   };
@@ -327,6 +379,72 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       setIsConnecting(true);
       console.log('Attempting to connect to device:', device.address);
 
+      const useRongta = isRongtaPrinterName(device.name);
+      const RongtaPrintBridge = getRongtaPrintBridge();
+
+      if (useRongta && RongtaPrintBridge) {
+        console.log('🖨️ Rongta printer detected — using official Rongta SDK');
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`Rongta connection attempt ${attempt}/3`);
+            await RongtaPrintBridge.connect(device.address);
+            console.log('Successfully connected via Rongta SDK:', device.address);
+            setActivePrinter(device.name, 'rongta');
+            setConnectedDevice(device);
+            return;
+          } catch (error) {
+            console.error(`Rongta connection attempt ${attempt} failed:`, error);
+            lastError = error;
+            if (attempt < 3) {
+              await new Promise<void>(resolve =>
+                setTimeout(() => resolve(), 1000),
+              );
+            }
+          }
+        }
+        setConnectedDevice(null);
+        throw lastError || new Error('Failed to connect Rongta after 3 attempts');
+      }
+
+      const useXprinter = isXprinterPrinterName(device.name);
+      const XprinterPrintBridge = getXprinterPrintBridge();
+
+      if (useXprinter && XprinterPrintBridge) {
+        console.log(
+          '🖨️ Xprinter/Born4ship detected — using official Xprinter SDK',
+        );
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`Xprinter connection attempt ${attempt}/3`);
+            await XprinterPrintBridge.connect(device.address);
+            console.log(
+              'Successfully connected via Xprinter SDK:',
+              device.address,
+            );
+            setActivePrinter(device.name, 'xprinter');
+            setConnectedDevice(device);
+            return;
+          } catch (error) {
+            console.error(
+              `Xprinter connection attempt ${attempt} failed:`,
+              error,
+            );
+            lastError = error;
+            if (attempt < 3) {
+              await new Promise<void>(resolve =>
+                setTimeout(() => resolve(), 1000),
+              );
+            }
+          }
+        }
+        setConnectedDevice(null);
+        throw (
+          lastError || new Error('Failed to connect Xprinter after 3 attempts')
+        );
+      }
+
       const {PrintBridge} = NativeModules;
       if (!PrintBridge) {
         throw new Error('PrintBridge native module not found');
@@ -339,6 +457,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           console.log(`Connection attempt ${attempt}/3`);
           await PrintBridge.connectDual(device.address);
           console.log('Successfully connected to device:', device.address);
+          setActivePrinter(device.name, 'printbridge');
           setConnectedDevice(device);
           return; // Success, exit the function
         } catch (error) {
@@ -372,17 +491,37 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   const disconnectDevice = async () => {
     try {
       console.log('Attempting to disconnect device');
-      const {PrintBridge} = NativeModules;
-      if (!PrintBridge) {
-        throw new Error('PrintBridge native module not found');
+      const engine = getActivePrintEngine();
+      const RongtaPrintBridge = getRongtaPrintBridge();
+      const XprinterPrintBridge = getXprinterPrintBridge();
+      if (engine === 'rongta' && RongtaPrintBridge) {
+        await RongtaPrintBridge.disconnect();
+      } else if (engine === 'xprinter' && XprinterPrintBridge) {
+        await XprinterPrintBridge.disconnect();
+      } else if (
+        isRongtaPrinterName(connectedDevice?.name) &&
+        RongtaPrintBridge
+      ) {
+        await RongtaPrintBridge.disconnect();
+      } else if (
+        isXprinterPrinterName(connectedDevice?.name) &&
+        XprinterPrintBridge
+      ) {
+        await XprinterPrintBridge.disconnect();
+      } else {
+        const {PrintBridge} = NativeModules;
+        if (!PrintBridge) {
+          throw new Error('PrintBridge native module not found');
+        }
+        await PrintBridge.disconnect();
       }
-
-      await PrintBridge.disconnect();
       console.log('Successfully disconnected device');
+      clearActivePrinter();
       setConnectedDevice(null);
     } catch (error) {
       console.error('Error disconnecting device:', error);
       // Force reset connection state even if disconnect fails
+      clearActivePrinter();
       setConnectedDevice(null);
     }
   };
@@ -390,6 +529,28 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   // Get connection status
   const getConnectionStatus = async () => {
     try {
+      const engine = getActivePrintEngine();
+      if (engine === 'rongta') {
+        const bridge = getRongtaPrintBridge();
+        const status = await bridge?.isConnected();
+        return {
+          type: 'CLASSIC' as const,
+          connected: !!status?.connected,
+          classicConnected: !!status?.connected,
+          bleConnected: false,
+        };
+      }
+      if (engine === 'xprinter') {
+        const bridge = getXprinterPrintBridge();
+        const status = await bridge?.isConnected();
+        return {
+          type: 'CLASSIC' as const,
+          connected: !!status?.connected,
+          classicConnected: !!status?.connected,
+          bleConnected: false,
+        };
+      }
+
       const {PrintBridge} = NativeModules;
       if (!PrintBridge) {
         throw new Error('PrintBridge native module not found');
@@ -415,7 +576,10 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     companyName?: string,
     sessionId?: string, // Optional session ID for logging
     useFullPPDSFormat?: boolean, // If true, use 56mm×80mm PPDS format; if false, use 60mm×40mm PPD format
+    ppdsExtras?: PPDSLabelExtras,
   ) => {
+    await assertCanPrint();
+
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
@@ -501,6 +665,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
                       item.ingredients.includes(ing.ingredientName),
                     )
                   : undefined,
+              ppdsExtras,
             };
             console.log('🔍 PPDS Label Data:', ppdsLabelData);
             tsplCommands = generatePPDSLabel(ppdsLabelData);
@@ -540,7 +705,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
 
               tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
                 dpi: 203,
-              });
+              }, ppdsExtras);
             } else {
               // Fallback to standard label if menu item not found
               console.warn(
@@ -568,15 +733,33 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               config: {dpi: 203},
             });
 
-            tsplCommands = generatePPDLabel(menuItem, finalExpiryDate, {
-              dpi: 203,
-            });
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDLabel80mm(menuItem, finalExpiryDate, {
+                  dpi: 203,
+                })
+              : generatePPDLabel(menuItem, finalExpiryDate, {
+                  dpi: 203,
+                });
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for PPD label ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.labelType === 'etc') {
           // Use specialized ETC label function for custom contains text
@@ -599,21 +782,45 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               customContains: item.ingredients?.join(', '),
             });
 
-            tsplCommands = generateETCLabel(
-              menuItem,
-              finalExpiryDate,
-              {
-                dpi: 203,
-              },
-              item.customInitials || initials,
-              item.ingredients?.join(', '),
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateETCLabel80mm(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                  item.ingredients?.join(', '),
+                )
+              : generateETCLabel(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                  item.ingredients?.join(', '),
+                );
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for ETC label ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'ingredients') {
           // Use generateIngredientLabel for ingredient labels (our improved function)
@@ -629,18 +836,39 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           if (ingredient) {
             console.log('✅ Found ingredient object:', ingredient);
             // Pass the expiry date from the print queue item (prioritize custom expiry)
-            tsplCommands = generateIngredientLabel(
-              ingredient,
-              customExpiry[item.uid] || item.expiryDate,
-              {dpi: 203},
-              item.customInitials || initials,
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateIngredientLabel80mm(
+                  ingredient,
+                  customExpiry[item.uid] || item.expiryDate,
+                  {dpi: 203},
+                  item.customInitials || initials,
+                )
+              : generateIngredientLabel(
+                  ingredient,
+                  customExpiry[item.uid] || item.expiryDate,
+                  {dpi: 203},
+                  item.customInitials || initials,
+                );
           } else {
             // Fallback to standard label if ingredient not found
             console.warn(
               `⚠️ Ingredient not found for ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else if (item.type === 'menu') {
           // Use generateMenuItemLabel for regular menu item labels (our improved function)
@@ -693,24 +921,59 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
               config: {dpi: 203},
             });
 
-            tsplCommands = generateMenuItemLabel(
-              menuItem,
-              finalExpiryDate,
-              {
-                dpi: 203,
-              },
-              item.customInitials || initials,
-            );
+            tsplCommands = useFullPPDSFormat
+              ? generateMenuItemLabel80mm(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                )
+              : generateMenuItemLabel(
+                  menuItem,
+                  finalExpiryDate,
+                  {
+                    dpi: 203,
+                  },
+                  item.customInitials || initials,
+                );
           } else {
             // Fallback to standard label if menu item not found
             console.warn(
               `⚠️ Menu item not found for ${item.name}, using fallback`,
             );
-            tsplCommands = generateDirectTSPLLabel(labelData);
+            tsplCommands = useFullPPDSFormat
+              ? generatePPDSLabel({
+                  ...labelData,
+                  expiryLine: `Use by: ${
+                    customExpiry[item.uid] || item.expiryDate
+                  }`,
+                  storageInstructions:
+                    storageInstructions ||
+                    'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                  initialsLine: companyName
+                    ? `Prepared by: ${companyName}`
+                    : 'Prepared by: InstaLabel Ltd',
+                  ppdsExtras,
+                })
+              : generateDirectTSPLLabel(labelData);
           }
         } else {
           // Use standard label function for other label types
-          tsplCommands = generateDirectTSPLLabel(labelData);
+          tsplCommands = useFullPPDSFormat
+            ? generatePPDSLabel({
+                ...labelData,
+                expiryLine: `Use by: ${customExpiry[item.uid] || item.expiryDate}`,
+                storageInstructions:
+                  storageInstructions ||
+                  'Keep refrigerated below 5°C. Consume within 2 days of opening.',
+                initialsLine: companyName
+                  ? `Prepared by: ${companyName}`
+                  : 'Prepared by: InstaLabel Ltd',
+                ppdsExtras,
+              })
+            : generateDirectTSPLLabel(labelData);
         }
 
         // Print the label quantity times
@@ -719,7 +982,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             `🖨️ Printing label ${i + 1}/${quantity} for ${item.name}`,
           );
 
-          await PrintBridge.printTSPL(tsplCommands);
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
 
           // Small delay between prints to prevent buffer overflow
           if (i < quantity - 1) {
@@ -739,7 +1002,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
             quantity: quantity,
             expiryDate: customExpiry[item.uid] || item.expiryDate,
             initial: item.customInitials || initials,
-            labelHeight: item.labelType === 'ppds' ? '80mm' : '40mm',
+            labelHeight:
+              useFullPPDSFormat || item.labelType === 'ppds' ? '80mm' : '40mm',
             printerUsed: connectedDevice.name || 'Bluetooth Printer',
             sessionId: logSessionId,
             selectedItems:
@@ -775,6 +1039,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     if (!spoolerRef.current) {
       // Create the actual print function that the spooler will use
       const actualPrintFunction = async (labelData: any) => {
+        await validateSubscriptionForPrint();
+
         if (!connectedDevice) {
           throw new Error('No device connected');
         }
@@ -804,8 +1070,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
           console.log('📝 Generated TSPL commands:', tsplCommands);
           console.log('📏 TSPL commands length:', tsplCommands.length);
 
-          await PrintBridge.printTSPL(tsplCommands);
-          console.log('✅ PrintBridge.printTSPL completed successfully');
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
+          console.log('✅ Print completed successfully');
         } catch (error) {
           console.error('❌ Error in actualPrintFunction:', error);
           console.error('❌ Label data:', JSON.stringify(labelData, null, 2));
@@ -876,13 +1142,15 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
   }, []);
 
   // Spooler functions
-  const addToPrintQueue = (
+  const addToPrintQueue = async (
     labelData: any,
     quantity: number = 1,
     priority: 'high' | 'normal' | 'low' = 'normal',
     userId?: string,
     sessionId?: string,
-  ): string => {
+  ): Promise<string> => {
+    await assertCanPrint();
+
     if (!spoolerRef.current) {
       throw new Error('Print spooler not initialized');
     }
@@ -992,6 +1260,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     storageInstructions?: string,
     companyName?: string,
   ) => {
+    await assertCanPrint();
+
     if (!connectedDevice) {
       throw new Error('No device connected');
     }
@@ -1031,7 +1301,7 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       );
       console.log('📏 TSPL commands length:', tsplCommands.length);
 
-      await PrintBridge.printTSPL(tsplCommands);
+      await sendTsplPrint(tsplCommands, connectedDevice.name);
       console.log('✅ Simple custom label printed successfully');
 
       // Log the print action to backend for tracking/auditing
@@ -1060,6 +1330,123 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
       }
     } catch (error) {
       console.error('❌ Error in simple custom label printing:', error);
+      throw error;
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  // Print circular allergen stickers
+  const printCircularAllergenSticker = async (
+    printQueue: any[],
+    customExpiry: Record<string, string>,
+  ) => {
+    await assertCanPrint();
+
+    if (!connectedDevice) {
+      throw new Error('No device connected');
+    }
+
+    if (!printQueue || printQueue.length === 0) {
+      throw new Error('No items in print queue');
+    }
+
+    try {
+      setIsPrinting(true);
+      console.log('🖨️ Starting circular allergen sticker printing...');
+
+      const {PrintBridge} = NativeModules;
+
+      // Process each item in the queue
+      for (const item of printQueue) {
+        const quantity = item.quantity;
+        const finalExpiryDate = customExpiry[item.uid] || item.expiryDate;
+
+        console.log(`🖨️ Printing ${quantity} circular stickers for: ${item.name}`);
+
+        // Build ingredients line similar to PPDS labels
+        let ingredientsLine: string | undefined;
+        if (item.ingredients && item.ingredients.length > 0) {
+          if (item.allergens && item.allergens.length > 0) {
+            const ingredientLines = item.ingredients.map((ingredient: string) => {
+              const ingredientAllergens = item.allergens.filter((allergen: string) =>
+                ingredient
+                  .toLowerCase()
+                  .includes(allergen.toLowerCase()),
+              );
+              if (ingredientAllergens.length > 0) {
+                const allergenWarnings = ingredientAllergens
+                  .map((a: string) => a.toUpperCase())
+                  .join(', ');
+                return `${ingredient} (${allergenWarnings})`;
+              }
+              return ingredient;
+            });
+            ingredientsLine = ingredientLines.join(', ');
+          } else {
+            ingredientsLine = item.ingredients.join(', ');
+          }
+        }
+
+        // Generate TSPL commands for circular allergen sticker
+        const labelData = {
+          itemName: item.name,
+          allergens: item.allergens || [],
+          expiryDate: finalExpiryDate,
+          ingredientsLine,
+        };
+
+        const tsplCommands = generateCircularAllergenSticker(labelData, {
+          dpi: 203,
+        });
+
+        // Print the label quantity times
+        for (let i = 0; i < quantity; i++) {
+          console.log(
+            `🖨️ Printing circular sticker ${i + 1}/${quantity} for ${item.name}`,
+          );
+
+          await sendTsplPrint(tsplCommands, connectedDevice.name);
+
+          // Small delay between prints
+          if (i < quantity - 1) {
+            await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+          }
+        }
+
+        // Log the print action
+        try {
+          const sessionId = apiService.generateSessionId();
+          await apiService.logPrintAction({
+            labelType: 'allergen-sticker',
+            itemId: item.uid || item.id || '',
+            itemName: item.name,
+            quantity: quantity,
+            expiryDate: finalExpiryDate,
+            initial: '',
+            labelHeight: '37mm',
+            printerUsed: connectedDevice.name || 'Bluetooth Printer',
+            sessionId: sessionId,
+            selectedItems: undefined,
+          });
+          console.log(
+            `✅ Circular allergen sticker print action logged for ${item.name}`,
+          );
+        } catch (logError) {
+          console.warn(
+            `⚠️ Failed to log circular allergen sticker print action for ${item.name}:`,
+            logError,
+          );
+        }
+
+        console.log(
+          `✅ Completed printing ${quantity} circular stickers for ${item.name}`,
+        );
+      }
+
+      console.log('✅ Circular allergen sticker printing completed successfully');
+    } catch (error) {
+      console.error('❌ Error in circular allergen sticker printing:', error);
       throw error;
     } finally {
       setIsPrinting(false);
@@ -1096,6 +1483,8 @@ export const PrinterProvider: React.FC<PrinterProviderProps> = ({children}) => {
     refreshConnectionStatus,
     printTSPLLabels,
     printSimpleCustomLabel,
+    printCircularAllergenSticker,
+    assertCanPrint,
 
     // Spooler functions
     addToPrintQueue,

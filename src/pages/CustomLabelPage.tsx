@@ -11,19 +11,27 @@ import {
   StatusBar,
 } from 'react-native';
 import {usePrinter} from '../PrinterContext';
+import {useMode} from '../contexts/ModeContext';
 import {Printer, Plus, Trash2} from 'lucide-react-native';
 import {showToast} from '../utils/toastUtils';
 import CalendarModal from '../components/CalendarModal';
-import {generateSimpleCustomLabel} from '../../tsplUtils';
+import {
+  generateSimpleCustomLabel,
+  generateSimpleCustomLabel80mm,
+} from '../../tsplUtils';
+import {apiService} from '../services/api';
+import {LabelType} from '../utils/labelManagement';
 
 const CustomLabelPage: React.FC = () => {
-  const {connectedDevice, isPrinting, printTSPLLabels} = usePrinter();
+  const {connectedDevice, isPrinting, printTSPLLabels, assertCanPrint} =
+    usePrinter();
+  const {selectedMode} = useMode();
 
   // Form state
   const [itemName, setItemName] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [contains, setContains] = useState('');
-  const [labelType, setLabelType] = useState('default');
+  const [labelType, setLabelType] = useState<LabelType>('default');
 
   // Form state for simple custom label (Notes tab)
   const [heading, setHeading] = useState('');
@@ -98,6 +106,8 @@ const CustomLabelPage: React.FC = () => {
     }
 
     try {
+      await assertCanPrint();
+
       // Create a mock menu item object that matches what generateMenuItemLabel expects
       const customMenuItem = {
         menuItemName: itemName.trim(),
@@ -119,7 +129,7 @@ const CustomLabelPage: React.FC = () => {
         name: itemName.trim(),
         type: 'menu',
         quantity: 1,
-        labelType: 'etc' as const, // Always use 'etc' for custom labels
+        labelType, // Use selected type so ad-hoc prep/cooked/default follows standard formatters
         expiryDate: expiryDate.trim() || undefined,
         allergens: [],
         ingredients: contains.trim()
@@ -128,11 +138,13 @@ const CustomLabelPage: React.FC = () => {
               .split(',')
               .map(i => i.trim())
           : [],
-        labelHeight: '40mm',
+        labelHeight: selectedMode === '80mm' ? '80mm' : '40mm',
       };
 
+      // Generate session ID for logging
+      const sessionId = apiService.generateSessionId();
+
       // Use the same printing logic as other labels
-      // No logging for custom labels
       await printTSPLLabels(
         [printQueueItem],
         [], // ingredients array (empty for custom)
@@ -141,7 +153,8 @@ const CustomLabelPage: React.FC = () => {
         '', // initials
         undefined, // storageInstructions
         undefined, // companyName
-        undefined, // No session ID - no logging for custom labels
+        sessionId, // Pass session ID for logging
+        selectedMode === '80mm', // Use 80mm formatter when in 80mm mode
       );
 
       showToast.success(
@@ -190,34 +203,36 @@ const CustomLabelPage: React.FC = () => {
     }
 
     try {
+      await assertCanPrint();
+
       // Generate TSPL commands for the simple custom label
-      const tsplCommands = generateSimpleCustomLabel(
-        heading.trim(),
-        subheading.trim(),
-        {
-          dpi: 203,
-          gap: 3,
-          direction: 0,
-          density: 8,
-        },
+      const tsplCommands =
+        selectedMode === '80mm'
+          ? generateSimpleCustomLabel80mm(heading.trim(), subheading.trim(), {
+              dpi: 203,
+              gap: 3,
+              direction: 0,
+              density: 8,
+            })
+          : generateSimpleCustomLabel(heading.trim(), subheading.trim(), {
+              dpi: 203,
+              gap: 3,
+              direction: 0,
+              density: 8,
+            });
+
+      // Send to printer (Rongta auto-routes via TSPL raster → ZPL bitmap)
+      const {sendTsplPrint} = require('../utils/sendTsplPrint');
+      await sendTsplPrint(tsplCommands, connectedDevice?.name);
+
+      showToast.success(
+        'Simple Label Printed',
+        'Your simple label has been sent to the printer',
       );
 
-      // Send to printer using PrintBridge
-      const {PrintBridge} = require('react-native').NativeModules;
-      const result = await PrintBridge.printTSPL(tsplCommands);
-
-      if (result.success) {
-        showToast.success(
-          'Simple Label Printed',
-          'Your simple label has been sent to the printer',
-        );
-
-        // Clear form
-        setHeading('');
-        setSubheading('');
-      } else {
-        throw new Error(result.error || 'Unknown print error');
-      }
+      // Clear form
+      setHeading('');
+      setSubheading('');
     } catch (error) {
       console.error('Print error:', error);
       showToast.error(

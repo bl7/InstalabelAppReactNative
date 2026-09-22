@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   PRINT_QUEUE_PPDS: 'offline_print_queue_ppds',
   RECENT_ITEMS: 'offline_recent_items',
   LAST_SYNC: 'offline_last_sync',
+  PENDING_LOGS: 'offline_pending_logs',
 } as const;
 
 // Legacy keys for backward compatibility
@@ -725,6 +726,57 @@ class OfflineManager {
     } catch (error) {
       console.error('Error getting cache age info:', error);
       return {};
+    }
+  }
+
+  // Offline log queuing methods
+  async queueOfflineLog(logData: any): Promise<void> {
+    try {
+      const pendingLogs = await this.getPendingLogs();
+      const logWithTimestamp = {
+        ...logData,
+        queuedAt: Date.now(),
+        id: `offline_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      };
+
+      pendingLogs.push(logWithTimestamp);
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.PENDING_LOGS,
+        JSON.stringify(pendingLogs),
+      );
+
+      console.log('📝 Offline log queued:', logWithTimestamp.id);
+    } catch (error) {
+      console.error('Failed to queue offline log:', error);
+    }
+  }
+
+  async getPendingLogs(): Promise<any[]> {
+    try {
+      const cached = await AsyncStorage.getItem(STORAGE_KEYS.PENDING_LOGS);
+      return cached ? JSON.parse(cached) : [];
+    } catch (error) {
+      console.error('Failed to get pending logs:', error);
+      return [];
+    }
+  }
+
+  async clearPendingLogs(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEYS.PENDING_LOGS);
+      console.log('🧹 Pending logs cleared');
+    } catch (error) {
+      console.error('Failed to clear pending logs:', error);
+    }
+  }
+
+  async getPendingLogsCount(): Promise<number> {
+    try {
+      const pendingLogs = await this.getPendingLogs();
+      return pendingLogs.length;
+    } catch (error) {
+      console.error('Failed to get pending logs count:', error);
+      return 0;
     }
   }
 

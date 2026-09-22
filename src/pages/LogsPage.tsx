@@ -1,14 +1,23 @@
-import React from 'react';
-import {SafeAreaView, View, Text, StyleSheet, StatusBar} from 'react-native';
+import React, {useState} from 'react';
+import {
+  SafeAreaView,
+  View,
+  Text,
+  StyleSheet,
+  StatusBar,
+  TouchableOpacity,
+} from 'react-native';
 import {useAuth} from '../contexts/AuthContext';
 import {usePrinter} from '../PrinterContext';
-import {Printer} from 'lucide-react-native';
+import {Printer, Wifi, WifiOff} from 'lucide-react-native';
 import PrintSessions from '../components/PrintSessions';
 import PrintQueueStatus from '../components/PrintQueueStatus';
+import OfflineLogs from '../components/OfflineLogs';
 
 const LogsPage: React.FC = () => {
   const {isAuthenticated} = useAuth();
   const {connectedDevice} = usePrinter();
+  const [activeTab, setActiveTab] = useState<'online' | 'offline'>('online');
 
   if (!isAuthenticated) {
     return (
@@ -64,8 +73,50 @@ const LogsPage: React.FC = () => {
       {/* Printer Status */}
       <PrintQueueStatus />
 
-      {/* Print Sessions Component */}
-      <PrintSessions showDetails={false} />
+      {/* Tab Navigation */}
+      <View style={styles.tabNavigation}>
+        <TouchableOpacity
+          style={[
+            styles.tab,
+            activeTab === 'online' ? styles.activeTab : styles.inactiveTab,
+          ]}
+          onPress={() => setActiveTab('online')}>
+          <Wifi size={16} color={activeTab === 'online' ? '#8A2BE2' : '#999'} />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === 'online' && styles.activeTabText,
+            ]}>
+            Online Logs
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.tab,
+            activeTab === 'offline' ? styles.activeTab : styles.inactiveTab,
+          ]}
+          onPress={() => setActiveTab('offline')}>
+          <WifiOff
+            size={16}
+            color={activeTab === 'offline' ? '#8A2BE2' : '#999'}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === 'offline' && styles.activeTabText,
+            ]}>
+            Offline Logs
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Tab Content */}
+      {activeTab === 'online' ? (
+        <PrintSessions showDetails={false} />
+      ) : (
+        <OfflineLogs />
+      )}
     </SafeAreaView>
   );
 };
@@ -124,6 +175,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
     textAlign: 'center',
+  },
+  tabNavigation: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    marginHorizontal: 4,
+  },
+  activeTab: {
+    backgroundColor: '#f0f0ff',
+    borderWidth: 1,
+    borderColor: '#8A2BE2',
+  },
+  inactiveTab: {
+    backgroundColor: 'transparent',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#999',
+    marginLeft: 6,
+  },
+  activeTabText: {
+    color: '#8A2BE2',
   },
 });
 

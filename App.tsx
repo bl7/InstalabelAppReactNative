@@ -2,24 +2,32 @@ import React, {useEffect} from 'react';
 import {AuthProvider, useAuth} from './src/contexts/AuthContext';
 import {SubscriptionProvider} from './src/contexts/SubscriptionContext';
 import {PrinterProvider} from './src/PrinterContext';
+import {ModeProvider, useMode} from './src/contexts/ModeContext';
 import LoginPage from './src/pages/LoginPage';
+import ModeSelectionPage from './src/pages/ModeSelectionPage';
 import CustomTabNavigator from './src/components/CustomTabNavigator';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import VersionGate from './src/components/VersionGate';
 import OfflineNotice from './src/components/OfflineNotice';
 import Toast from 'react-native-toast-message';
 import backgroundSyncService from './src/services/backgroundSync';
 import backgroundCacheService from './src/services/backgroundCacheService';
+import deviceHeartbeatService from './src/services/deviceHeartbeat';
 
 const App: React.FC = () => {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <SubscriptionProvider>
-          <PrinterProvider>
-            <AppContent />
-          </PrinterProvider>
-        </SubscriptionProvider>
-      </AuthProvider>
+      <VersionGate>
+        <AuthProvider>
+          <ModeProvider>
+            <SubscriptionProvider>
+              <PrinterProvider>
+                <AppContent />
+              </PrinterProvider>
+            </SubscriptionProvider>
+          </ModeProvider>
+        </AuthProvider>
+      </VersionGate>
     </ErrorBoundary>
   );
 };
@@ -27,6 +35,7 @@ const App: React.FC = () => {
 // Move AppContent inside the context providers
 const AppContent: React.FC = () => {
   const {isAuthenticated, accessToken} = useAuth();
+  const {selectedMode, isLoading: isModeLoading} = useMode();
 
   // Initialize background services
   useEffect(() => {
@@ -39,11 +48,45 @@ const AppContent: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isAuthenticated || !accessToken) {
+      deviceHeartbeatService.stop();
+      return;
+    }
+
+    deviceHeartbeatService.start();
+
+    return () => {
+      deviceHeartbeatService.stop();
+    };
+  }, [isAuthenticated, accessToken]);
+
   if (!isAuthenticated) {
     return (
       <>
         <OfflineNotice />
         <LoginPage />
+      </>
+    );
+  }
+
+  // Show mode selection if authenticated but no mode selected
+  if (!isModeLoading && !selectedMode) {
+    return (
+      <>
+        <OfflineNotice />
+        <ModeSelectionPage />
+        <Toast />
+      </>
+    );
+  }
+
+  // Show loading while mode is being loaded
+  if (isModeLoading) {
+    return (
+      <>
+        <OfflineNotice />
+        <Toast />
       </>
     );
   }

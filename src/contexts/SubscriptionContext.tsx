@@ -6,6 +6,7 @@ import React, {
   useEffect,
   ReactNode,
 } from 'react';
+import {AppState, AppStateStatus} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import {
@@ -20,11 +21,16 @@ import {useAuth} from './AuthContext';
 
 // Import offline manager once at module level
 import offlineManager from '../utils/offlineManager';
+import {
+  SUBSCRIPTION_CACHE_KEY,
+  SUBSCRIPTION_CACHE_TIMESTAMP_KEY,
+  setSubscriptionUpdateListener,
+} from '../utils/subscriptionPrintGate';
 
 // Storage keys
 const STORAGE_KEYS = {
-  SUBSCRIPTION_CACHE: 'subscription_cache',
-  SUBSCRIPTION_CACHE_TIMESTAMP: 'subscription_cache_timestamp',
+  SUBSCRIPTION_CACHE: SUBSCRIPTION_CACHE_KEY,
+  SUBSCRIPTION_CACHE_TIMESTAMP: SUBSCRIPTION_CACHE_TIMESTAMP_KEY,
 } as const;
 
 // Cache duration: 5 minutes
@@ -85,9 +91,9 @@ export const SubscriptionProvider: React.FC<SubscriptionProviderProps> = ({
     checkOfflineRestrictions();
   }, [offline]);
 
-  // Computed values
+  // Computed values — subscription status always gates printing, even offline
   const canPrint =
-    offline && !offlineRestricted ? true : canUserPrint(subscription);
+    offline && offlineRestricted ? false : canUserPrint(subscription);
   const blockedMessage = offline
     ? offlineRestricted
       ? 'Offline mode restricted. Please connect to internet to refresh your data.'
@@ -195,18 +201,9 @@ export const SubscriptionProvider: React.FC<SubscriptionProviderProps> = ({
       // Set token in API service
       apiService.setAccessToken(accessToken);
 
-      // Try to load from cache first
-      const cached = await loadFromCache();
-      if (cached) {
-        setIsLoading(false);
-        return;
-      }
-
-      // Fetch from API
+      // Online: always fetch fresh subscription status
       const response = await apiService.getSubscriptionStatus();
       setSubscription(response.subscription);
-
-      // Save to cache
       await saveToCache(response.subscription);
     } catch (error: any) {
       console.error('Error fetching subscription:', error);
@@ -226,7 +223,7 @@ export const SubscriptionProvider: React.FC<SubscriptionProviderProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [isAuthenticated, accessToken, loadFromCache, saveToCache]);
+  }, [isAuthenticated, accessToken, saveToCache, offline]);
 
   // Check if online validation is required
   const needsOnlineValidation = useCallback(async (): Promise<boolean> => {
@@ -313,6 +310,38 @@ export const SubscriptionProvider: React.FC<SubscriptionProviderProps> = ({
       clearSubscription();
     }
   }, [isAuthenticated, accessToken, fetchSubscription, clearSubscription]);
+
+  useEffect(() => {
+    setSubscriptionUpdateListener(subscriptionData => {
+      setSubscription(subscriptionData);
+    });
+
+    return () => setSubscriptionUpdateListener(null);
+  }, []);
+
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (
+        nextState === 'active' &&
+        isAuthenticated &&
+        accessToken &&
+        !offline
+      ) {
+        refreshSubscription();
+      }
+    };
+
+    const subscription = AppState.addEventListener(
+      'change',
+      handleAppStateChange,
+    );
+    return () => subscription.remove();
+  }, [
+    isAuthenticated,
+    accessToken,
+    offline,
+    refreshSubscription,
+  ]);
 
   // Removed periodic refresh: subscription is fetched once on app load
   // and can be refreshed manually via the refresh button

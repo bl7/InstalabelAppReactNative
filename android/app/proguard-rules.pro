@@ -8,3 +8,16 @@
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # Add any project specific keep options here:
+
+-keep class com.learnium.RNDeviceInfo.** { *; }
+-keep class com.facebook.react.** { *; }
+-keep class com.facebook.hermes.** { *; }
+-keep class com.facebook.jni.** { *; }
+
+# Official Rongta RTPrinterSDK
+-keep class com.rt.printerlibrary.** { *; }
+-dontwarn com.rt.printerlibrary.**
+
+# Official Xprinter POSConnect SDK
+-keep class net.posprinter.** { *; }
+-dontwarn net.posprinter.**
