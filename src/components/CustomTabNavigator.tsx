@@ -16,6 +16,7 @@ import {
   Package,
   AlertTriangle,
   ShieldAlert,
+  ClipboardList,
 } from 'lucide-react-native';
 import FloatingActionButtons from './FloatingActionButtons';
 import {useSubscription} from '../contexts/SubscriptionContext';
@@ -26,13 +27,14 @@ import SettingsPage from '../pages/SettingsPage';
 import PPDsPage from '../pages/PPDsPage';
 import LogsPage from '../pages/LogsPage';
 import LabelsPage from '../pages/LabelsPage';
+import CleaningPage from '../pages/CleaningPage';
 import CustomLabelPage from '../pages/CustomLabelPage';
 import BulkPage from '../pages/BulkPage';
 import AllergenStickerPage from '../pages/AllergenStickerPage';
 
 import PrintQueueStatus from './PrintQueueStatus';
 
-type TabType = 'Settings' | 'Logs' | 'PPDS' | 'Labels' | 'Bulk' | 'Custom' | 'AllergenSticker';
+type TabType = 'Settings' | 'Logs' | 'PPDS' | 'Labels' | 'Bulk' | 'Custom' | 'AllergenSticker' | 'Cleaning';
 
 const CustomTabNavigator: React.FC = () => {
   const {canPrint, subscriptionInfo} = useSubscription();
@@ -42,7 +44,7 @@ const CustomTabNavigator: React.FC = () => {
   const getAvailableTabs = (): TabType[] => {
     if (!selectedMode) return [];
     
-    const allTabs: TabType[] = ['Labels', 'PPDS', 'Bulk', 'AllergenSticker', 'Logs', 'Settings'];
+    const allTabs: TabType[] = ['Labels', 'PPDS', 'Bulk', 'AllergenSticker', 'Cleaning', 'Logs', 'Settings'];
     
     switch (selectedMode) {
       case '40mm':
@@ -89,6 +91,8 @@ const CustomTabNavigator: React.FC = () => {
         return <PPDsPage />;
       case 'Labels':
         return <LabelsPage />;
+      case 'Cleaning':
+        return <CleaningPage />;
 
       case 'Bulk':
         return <BulkPage />;
@@ -144,6 +148,7 @@ const CustomTabNavigator: React.FC = () => {
           {availableTabs.includes('PPDS') && renderTab('PPDS', Printer, 'PPDS')}
           {availableTabs.includes('Bulk') && renderTab('Bulk', Package, 'Bulk')}
           {availableTabs.includes('AllergenSticker') && renderTab('AllergenSticker', ShieldAlert, 'Stickers')}
+          {availableTabs.includes('Cleaning') && renderTab('Cleaning', ClipboardList, 'Cleaning')}
           {availableTabs.includes('Logs') && renderTab('Logs', History, 'Logs')}
           {availableTabs.includes('Settings') && renderTab('Settings', Cog, 'Settings')}
         </View>

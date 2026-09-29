@@ -97,6 +97,19 @@ export interface MenuItemsResponse {
   }[];
 }
 
+export interface CleaningOccurrence {
+  uuid: string;
+  taskName: string;
+  areaName: string;
+  dueLabel: string;
+  status: 'pending' | 'completed' | 'overdue' | string;
+  scheduledDate: string;
+  scheduledDateLabel: string;
+  scheduledDateLong: string;
+  completedAtLabel: string | null;
+  completedByName: string | null;
+}
+
 export interface AllergensResponse {
   data: Allergen[];
 }
@@ -1186,6 +1199,28 @@ class ApiService {
       INSTALABEL_ENV.API_BASE_URL,
     );
     return response;
+  }
+
+  async getCleaningOccurrences(view: 'today' | 'upcoming' | 'overdue'): Promise<{
+    message: string;
+    data: {
+      timezone: string;
+      today: string;
+      todayLabel: string;
+      tasks: CleaningOccurrence[];
+    };
+  }> {
+    return this.request(`/cleaning/occurrences?view=${view}`, {method: 'GET'});
+  }
+
+  async completeCleaningOccurrence(occurrenceId: string): Promise<{
+    message: string;
+    data: CleaningOccurrence;
+  }> {
+    return this.request(`/cleaning/occurrences/${occurrenceId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
   }
 }
 
