@@ -99,6 +99,7 @@ export interface MenuItemsResponse {
 
 export interface CleaningOccurrence {
   uuid: string;
+  taskId: string;
   taskName: string;
   areaName: string;
   dueLabel: string;
@@ -108,6 +109,8 @@ export interface CleaningOccurrence {
   scheduledDateLong: string;
   completedAtLabel: string | null;
   completedByName: string | null;
+  frequency?: string;
+  scheduleLabel?: string;
 }
 
 export interface AllergensResponse {
@@ -161,6 +164,7 @@ export interface LabelSettingsResponse {
 export interface LabelInitialsResponse {
   use_initials: boolean;
   initials: string[];
+  staff?: {initial: string; name: string}[];
 }
 
 export interface SubscriptionStatus {
@@ -1201,6 +1205,13 @@ class ApiService {
     return response;
   }
 
+  async getCleaningTasks(): Promise<{
+    message: string;
+    data: {uuid: string; frequency: string; scheduleLabel: string}[];
+  }> {
+    return this.request('/cleaning/tasks', {method: 'GET'});
+  }
+
   async getCleaningOccurrences(view: 'today' | 'upcoming' | 'overdue'): Promise<{
     message: string;
     data: {
@@ -1213,13 +1224,16 @@ class ApiService {
     return this.request(`/cleaning/occurrences?view=${view}`, {method: 'GET'});
   }
 
-  async completeCleaningOccurrence(occurrenceId: string): Promise<{
+  async completeCleaningOccurrence(
+    occurrenceId: string,
+    staffName: string,
+  ): Promise<{
     message: string;
     data: CleaningOccurrence;
   }> {
     return this.request(`/cleaning/occurrences/${occurrenceId}/complete`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({staffName}),
     });
   }
 }
